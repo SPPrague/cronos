@@ -1600,8 +1600,8 @@ github.com/labstack/gommon v0.3.0/go.mod h1:MULnywXg0yavhxWKc+lOruYdAhDwPK9wf0OL
 github.com/ldez/gomoddirectives v0.2.3/go.mod h1:cpgBogWITnCfRq2qGoDkKMEVSaarhdBr6g8G04uz6d0=
 github.com/ldez/tagliatelle v0.3.1/go.mod h1:8s6WJQwEYHbKZDsp/LjArytKOG8qaMrKQQ3mFukHs88=
 github.com/leanovate/gopter v0.2.9/go.mod h1:U2L/78B+KVFIx2VmW6onHJQzXtFb+p5y3y2Sh+Jxxv8=
-github.com/ledgerwatch/erigon-lib v0.0.0-20230130172141-b594e6cdbf76 h1:tBz+NJuOkvDP3g2A8/Ajxuo7Baxz2zy1OqLZmzGcATc=
-github.com/ledgerwatch/erigon-lib v0.0.0-20230130172141-b594e6cdbf76/go.mod h1:I3Gbzi7rY6Q5lPvKg2/lcXT5bOTrm+p0lphDmcsAjN8=
+github.com/ledgerwatch/erigon-lib v0.0.0-20230203121434-4344efa76550 h1:w7hA3mh9gOhaBlQxqB+a3cwpJ7fLc1Hn9HBRJx/OCb8=
+github.com/ledgerwatch/erigon-lib v0.0.0-20230203121434-4344efa76550/go.mod h1:cJSGIvVSkCmqdwOjskY+WnugOz5NVFs0EllQ4UN+rr4=
 github.com/leodido/go-urn v1.2.0 h1:hpXL4XnriNwQ/ABnpepYM/1vCLWNDfUNts8dX3xTG6Y=
 github.com/leodido/go-urn v1.2.0/go.mod h1:+8+nEpDfqqsY+g338gtMEUOtuK+4dEMhiQEgxpxOKII=
 github.com/leonklingele/grouper v1.1.0/go.mod h1:uk3I3uDfi9B6PeUjsCKi6ndcf63Uy7snXgR4yDYQVDY=

@@ -7,6 +7,7 @@ require (
 	github.com/alitto/pond v1.8.2
 	github.com/cosmos/cosmos-sdk v0.46.9-0.20230130122755-5e7dcbcce1e9
 	github.com/cosmos/iavl v0.19.5-rc.1
+	github.com/crypto-org-chain/cronos/memiavl v0.0.0
 	github.com/golang/snappy v0.0.4
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/ledgerwatch/erigon-lib v0.0.0-20230130172141-b594e6cdbf76

@@ -27,6 +27,7 @@ buildGoApplication rec {
     "!/cmd/"
     "!/client/"
     "!/versiondb/"
+    "!/memiavl/"
     "!go.mod"
     "!go.sum"
     "!gomod2nix.toml"

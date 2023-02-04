@@ -321,8 +321,8 @@ schema = 3
     version = "v1.15.11"
     hash = "sha256-9MXm0TObg6DyqnYMIw3IChrorHc2ILf5djZYoM0e1J0="
   [mod."github.com/ledgerwatch/erigon-lib"]
-    version = "v0.0.0-20230130172141-b594e6cdbf76"
-    hash = "sha256-D3txPh3evp8xbFITxnpgtpcrh4/9Uipvz4lH4CvJQrY="
+    version = "v0.0.0-20230203121434-4344efa76550"
+    hash = "sha256-58NjUp7mxm9BNIc85HeK8iH7xB/AD1jPYJ42XTh8FNI="
   [mod."github.com/lib/pq"]
     version = "v1.10.6"
     hash = "sha256-8EhFwY/9YH5L/fd6l2beOnC3VvpegRAmCCsnDVJBqBM="

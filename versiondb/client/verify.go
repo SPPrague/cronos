@@ -9,7 +9,7 @@ import (
 	"github.com/cosmos/iavl"
 	"github.com/spf13/cobra"
 
-	"github.com/crypto-org-chain/cronos/versiondb/memiavl"
+	"github.com/crypto-org-chain/cronos/memiavl"
 )
 
 func VerifyChangeSetCmd() *cobra.Command {
