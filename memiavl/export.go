@@ -2,83 +2,124 @@ package memiavl
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"math"
-
-	"cosmossdk.io/errors"
-	snapshottypes "github.com/cosmos/cosmos-sdk/snapshots/types"
-	"github.com/cosmos/iavl"
-	protoio "github.com/gogo/protobuf/io"
+	"path/filepath"
 )
+
+// ErrorExportDone is returned by Exporter.Next() when all items have been exported.
+var ErrorExportDone = errors.New("export is complete")
 
 // exportBufferSize is the number of nodes to buffer in the exporter. It improves throughput by
 // processing multiple nodes per context switch, but take care to avoid excessive memory usage,
 // especially since callers may export several IAVL stores in parallel (e.g. the Cosmos SDK).
 const exportBufferSize = 32
 
-func (db *DB) Snapshot(height uint64, protoWriter protoio.Writer) error {
-	if height > math.MaxUint32 {
-		return fmt.Errorf("height overflows uint32: %d", height)
+type MultiTreeExporter struct {
+	// only one of them is non-nil
+	db    *DB
+	mtree *MultiTree
+
+	iTree    int
+	exporter *Exporter
+}
+
+func NewMultiTreeExporter(dir string, version uint32, supportExportNonSnapshotVersion bool) (exporter *MultiTreeExporter, err error) {
+	var (
+		db    *DB
+		mtree *MultiTree
+	)
+	if supportExportNonSnapshotVersion {
+		db, err = Load(dir, Options{
+			TargetVersion:       version,
+			ZeroCopy:            true,
+			ReadOnly:            true,
+			SnapshotWriterLimit: DefaultSnapshotWriterLimit,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("invalid height: %d, %w", version, err)
+		}
+	} else {
+		curVersion, err := currentVersion(dir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load current version: %w", err)
+		}
+		if int64(version) > curVersion {
+			return nil, fmt.Errorf("snapshot is not created yet: height: %d", version)
+		}
+		mtree, err = LoadMultiTree(filepath.Join(dir, snapshotName(int64(version))), true, 0)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot don't exists: height: %d, %w", version, err)
+		}
 	}
 
-	mtree, err := Load(db.dir, Options{
-		TargetVersion: uint32(height),
-		ZeroCopy:      true,
-	})
-	if err != nil {
-		return errors.Wrapf(err, "invalid snapshot height: %d", height)
+	return &MultiTreeExporter{
+		db:    db,
+		mtree: mtree,
+	}, nil
+}
+
+func (mte *MultiTreeExporter) trees() []NamedTree {
+	if mte.db != nil {
+		return mte.db.trees
+	}
+	return mte.mtree.trees
+}
+
+func (mte *MultiTreeExporter) Next() (interface{}, error) {
+	if mte.exporter != nil {
+		node, err := mte.exporter.Next()
+		if err != nil {
+			if err == ErrorExportDone {
+				mte.exporter.Close()
+				mte.exporter = nil
+				return mte.Next()
+			}
+			return nil, err
+		}
+		return node, nil
 	}
 
-	for _, tree := range mtree.trees {
-		if err := protoWriter.WriteMsg(&snapshottypes.SnapshotItem{
-			Item: &snapshottypes.SnapshotItem_Store{
-				Store: &snapshottypes.SnapshotStoreItem{
-					Name: tree.name,
-				},
-			},
-		}); err != nil {
-			return err
-		}
+	trees := mte.trees()
+	if mte.iTree >= len(trees) {
+		return nil, ErrorExportDone
+	}
 
-		exporter := tree.tree.Export()
-		for {
-			node, err := exporter.Next()
-			if err == iavl.ExportDone {
-				break
-			} else if err != nil {
-				return err
-			}
-			if err := protoWriter.WriteMsg(&snapshottypes.SnapshotItem{
-				Item: &snapshottypes.SnapshotItem_IAVL{
-					IAVL: &snapshottypes.SnapshotIAVLItem{
-						Key:     node.Key,
-						Value:   node.Value,
-						Height:  int32(node.Height),
-						Version: node.Version,
-					},
-				},
-			}); err != nil {
-				return err
-			}
-		}
+	tree := trees[mte.iTree]
+	mte.exporter = tree.Export()
+	mte.iTree++
+	return tree.Name, nil
+}
+
+func (mte *MultiTreeExporter) Close() error {
+	if mte.exporter != nil {
+		mte.exporter.Close()
+		mte.exporter = nil
+	}
+
+	if mte.db != nil {
+		return mte.db.Close()
+	}
+	if mte.mtree != nil {
+		return mte.mtree.Close()
 	}
 
 	return nil
 }
 
-type exportWorker func(callback func(*iavl.ExportNode) bool)
+type exportWorker func(callback func(*ExportNode) bool)
 
 type Exporter struct {
-	ch     <-chan *iavl.ExportNode
+	ch     <-chan *ExportNode
 	cancel context.CancelFunc
 }
 
 func newExporter(worker exportWorker) *Exporter {
 	ctx, cancel := context.WithCancel(context.Background())
-	ch := make(chan *iavl.ExportNode, exportBufferSize)
+	ch := make(chan *ExportNode, exportBufferSize)
 	go func() {
 		defer close(ch)
-		worker(func(enode *iavl.ExportNode) bool {
+		worker(func(enode *ExportNode) bool {
 			select {
 			case ch <- enode:
 			case <-ctx.Done():
@@ -90,11 +131,11 @@ func newExporter(worker exportWorker) *Exporter {
 	return &Exporter{ch, cancel}
 }
 
-func (e *Exporter) Next() (*iavl.ExportNode, error) {
+func (e *Exporter) Next() (*ExportNode, error) {
 	if exportNode, ok := <-e.ch; ok {
 		return exportNode, nil
 	}
-	return nil, iavl.ExportDone
+	return nil, ErrorExportDone
 }
 
 // Close closes the exporter. It is safe to call multiple times.

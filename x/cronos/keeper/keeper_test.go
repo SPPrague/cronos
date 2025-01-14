@@ -5,12 +5,17 @@ import (
 	"testing"
 	"time"
 
+	sdkmath "cosmossdk.io/math"
 	cronosmodulekeeper "github.com/crypto-org-chain/cronos/v2/x/cronos/keeper"
 	keepertest "github.com/crypto-org-chain/cronos/v2/x/cronos/keeper/mock"
 	"github.com/crypto-org-chain/cronos/v2/x/cronos/types"
 
 	evmtypes "github.com/evmos/ethermint/x/evm/types"
 
+	"github.com/cometbft/cometbft/crypto/tmhash"
+	tmproto "github.com/cometbft/cometbft/proto/tendermint/types"
+	tmversion "github.com/cometbft/cometbft/proto/tendermint/version"
+	"github.com/cometbft/cometbft/version"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	govtypes "github.com/cosmos/cosmos-sdk/x/gov/types"
@@ -22,10 +27,6 @@ import (
 	ethermint "github.com/evmos/ethermint/types"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
-	"github.com/tendermint/tendermint/crypto/tmhash"
-	tmproto "github.com/tendermint/tendermint/proto/tendermint/types"
-	tmversion "github.com/tendermint/tendermint/proto/tendermint/version"
-	"github.com/tendermint/tendermint/version"
 
 	"github.com/crypto-org-chain/cronos/v2/app"
 )
@@ -62,8 +63,10 @@ func (suite *KeeperTestSuite) DoSetupTest(t *testing.T) {
 	require.NoError(t, err)
 	consAddress := sdk.ConsAddress(priv.PubKey().Address())
 
-	suite.app = app.Setup(t, sdk.AccAddress(suite.address.Bytes()).String(), false)
-	suite.ctx = suite.app.NewContext(false, tmproto.Header{
+	suite.app = app.Setup(t, sdk.AccAddress(suite.address.Bytes()).String())
+	blockIDHash := tmhash.Sum([]byte("block_id"))
+	hash := tmhash.Sum([]byte("partset_header"))
+	suite.ctx = suite.app.NewContext(false).WithBlockHeader(tmproto.Header{
 		Height:          1,
 		ChainID:         app.TestAppChainID,
 		Time:            time.Now().UTC(),
@@ -72,10 +75,10 @@ func (suite *KeeperTestSuite) DoSetupTest(t *testing.T) {
 			Block: version.BlockProtocol,
 		},
 		LastBlockId: tmproto.BlockID{
-			Hash: tmhash.Sum([]byte("block_id")),
+			Hash: blockIDHash,
 			PartSetHeader: tmproto.PartSetHeader{
 				Total: 11,
-				Hash:  tmhash.Sum([]byte("partset_header")),
+				Hash:  hash,
 			},
 		},
 		AppHash:            tmhash.Sum([]byte("app")),
@@ -93,10 +96,11 @@ func (suite *KeeperTestSuite) DoSetupTest(t *testing.T) {
 		CodeHash:    common.BytesToHash(ethcrypto.Keccak256(nil)).String(),
 	}
 
+	acc.AccountNumber = suite.app.AccountKeeper.NextAccountNumber(suite.ctx)
 	suite.app.AccountKeeper.SetAccount(suite.ctx, acc)
 
 	valAddr := sdk.ValAddress(suite.address.Bytes())
-	validator, err := stakingtypes.NewValidator(valAddr, priv.PubKey(), stakingtypes.Description{})
+	validator, err := stakingtypes.NewValidator(valAddr.String(), priv.PubKey(), stakingtypes.Description{})
 	require.NoError(t, err)
 	err = suite.app.StakingKeeper.SetValidatorByConsAddr(suite.ctx, validator)
 	require.NoError(t, err)
@@ -222,44 +226,44 @@ func (suite *KeeperTestSuite) TestOnRecvVouchers() {
 	}{
 		{
 			"state reverted after error",
-			sdk.NewCoins(sdk.NewCoin(types.IbcCroDenomDefaultValue, sdk.NewInt(123)), sdk.NewCoin("bad", sdk.NewInt(10))),
+			sdk.NewCoins(sdk.NewCoin(types.IbcCroDenomDefaultValue, sdkmath.NewInt(123)), sdk.NewCoin("bad", sdkmath.NewInt(10))),
 			func() {
-				suite.MintCoins(address, sdk.NewCoins(sdk.NewCoin(types.IbcCroDenomDefaultValue, sdk.NewInt(123))))
+				suite.MintCoins(address, sdk.NewCoins(sdk.NewCoin(types.IbcCroDenomDefaultValue, sdkmath.NewInt(123))))
 				// Verify balance IBC coin pre operation
 				ibcCroCoin := suite.GetBalance(address, types.IbcCroDenomDefaultValue)
-				suite.Require().Equal(sdk.NewInt(123), ibcCroCoin.Amount)
+				suite.Require().Equal(sdkmath.NewInt(123), ibcCroCoin.Amount)
 				// Verify balance EVM coin pre operation
 				evmCoin := suite.GetBalance(address, suite.evmParam.EvmDenom)
-				suite.Require().Equal(sdk.NewInt(0), evmCoin.Amount)
+				suite.Require().Equal(sdkmath.NewInt(0), evmCoin.Amount)
 			},
 			func() {
 				// Verify balance IBC coin post operation
 				ibcCroCoin := suite.GetBalance(address, types.IbcCroDenomDefaultValue)
-				suite.Require().Equal(sdk.NewInt(123), ibcCroCoin.Amount)
+				suite.Require().Equal(sdkmath.NewInt(123), ibcCroCoin.Amount)
 				// Verify balance EVM coin post operation
 				evmCoin := suite.GetBalance(address, suite.evmParam.EvmDenom)
-				suite.Require().Equal(sdk.NewInt(0), evmCoin.Amount)
+				suite.Require().Equal(sdkmath.NewInt(0), evmCoin.Amount)
 			},
 		},
 		{
 			"state committed upon success",
-			sdk.NewCoins(sdk.NewCoin(types.IbcCroDenomDefaultValue, sdk.NewInt(123))),
+			sdk.NewCoins(sdk.NewCoin(types.IbcCroDenomDefaultValue, sdkmath.NewInt(123))),
 			func() {
-				suite.MintCoins(address, sdk.NewCoins(sdk.NewCoin(types.IbcCroDenomDefaultValue, sdk.NewInt(123))))
+				suite.MintCoins(address, sdk.NewCoins(sdk.NewCoin(types.IbcCroDenomDefaultValue, sdkmath.NewInt(123))))
 				// Verify balance IBC coin pre operation
 				ibcCroCoin := suite.GetBalance(address, types.IbcCroDenomDefaultValue)
-				suite.Require().Equal(sdk.NewInt(123), ibcCroCoin.Amount)
+				suite.Require().Equal(sdkmath.NewInt(123), ibcCroCoin.Amount)
 				// Verify balance EVM coin pre operation
 				evmCoin := suite.GetBalance(address, suite.evmParam.EvmDenom)
-				suite.Require().Equal(sdk.NewInt(0), evmCoin.Amount)
+				suite.Require().Equal(sdkmath.NewInt(0), evmCoin.Amount)
 			},
 			func() {
 				// Verify balance IBC coin post operation
 				ibcCroCoin := suite.GetBalance(address, types.IbcCroDenomDefaultValue)
-				suite.Require().Equal(sdk.NewInt(0), ibcCroCoin.Amount)
+				suite.Require().Equal(sdkmath.NewInt(0), ibcCroCoin.Amount)
 				// Verify balance EVM coin post operation
 				evmCoin := suite.GetBalance(address, suite.evmParam.EvmDenom)
-				suite.Require().Equal(sdk.NewInt(1230000000000), evmCoin.Amount)
+				suite.Require().Equal(sdkmath.NewInt(1230000000000), evmCoin.Amount)
 			},
 		},
 	}
@@ -269,12 +273,11 @@ func (suite *KeeperTestSuite) TestOnRecvVouchers() {
 			suite.SetupTest() // reset
 			// Create Cronos Keeper with mock transfer keeper
 			cronosKeeper := *cronosmodulekeeper.NewKeeper(
-				app.MakeEncodingConfig().Codec,
+				suite.app.EncodingConfig().Codec,
 				suite.app.GetKey(types.StoreKey),
 				suite.app.GetKey(types.MemStoreKey),
 				suite.app.BankKeeper,
 				keepertest.IbcKeeperMock{},
-				suite.app.GravityKeeper,
 				suite.app.EvmKeeper,
 				suite.app.AccountKeeper,
 				authtypes.NewModuleAddress(govtypes.ModuleName).String(),
@@ -396,16 +399,16 @@ func (suite *KeeperTestSuite) TestRegisterOrUpdateTokenMapping() {
 	}
 
 	for _, tc := range testCases {
+		tc := tc
 		suite.Run(tc.name, func() {
 			suite.SetupTest() // reset
 			// Create Cronos Keeper with mock transfer keeper
 			cronosKeeper := *cronosmodulekeeper.NewKeeper(
-				app.MakeEncodingConfig().Codec,
+				suite.app.EncodingConfig().Codec,
 				suite.app.GetKey(types.StoreKey),
 				suite.app.GetKey(types.MemStoreKey),
 				suite.app.BankKeeper,
 				keepertest.IbcKeeperMock{},
-				suite.app.GravityKeeper,
 				suite.app.EvmKeeper,
 				suite.app.AccountKeeper,
 				authtypes.NewModuleAddress(govtypes.ModuleName).String(),

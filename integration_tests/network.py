@@ -6,11 +6,11 @@ from pathlib import Path
 
 import tomlkit
 import web3
-from pystarport import ports
+from pystarport import cluster, ports
 from web3.middleware import geth_poa_middleware
 
 from .cosmoscli import CosmosCLI
-from .utils import supervisorctl, wait_for_port
+from .utils import supervisorctl, w3_wait_for_block, wait_for_port
 
 
 class Cronos:
@@ -114,6 +114,8 @@ def setup_geth(path, base_port):
             str(base_port + 1),
             "--networkid",
             str(15),
+            "--miner.etherbase",
+            "0x57f96e6B86CdeFdB3d412547816a82E3E0EbF9D2",
         ]
         print(*cmd)
         proc = subprocess.Popen(
@@ -149,7 +151,13 @@ class GravityBridge:
 
 
 def setup_custom_cronos(
-    path, base_port, config, post_init=None, chain_binary=None, wait_port=True
+    path,
+    base_port,
+    config,
+    post_init=None,
+    chain_binary=None,
+    wait_port=True,
+    relayer=cluster.Relayer.HERMES.value,
 ):
     cmd = [
         "pystarport",
@@ -162,6 +170,8 @@ def setup_custom_cronos(
         str(base_port),
         "--no_remove",
     ]
+    if relayer == cluster.Relayer.RLY.value:
+        cmd = cmd + ["--relayer", str(relayer)]
     if chain_binary is not None:
         cmd = cmd[:1] + ["--cmd", chain_binary] + cmd[1:]
     print(*cmd)
@@ -176,7 +186,9 @@ def setup_custom_cronos(
         if wait_port:
             wait_for_port(ports.evmrpc_port(base_port))
             wait_for_port(ports.evmrpc_ws_port(base_port))
-        yield Cronos(path / "cronos_777-1", chain_binary=chain_binary or "cronosd")
+        c = Cronos(path / "cronos_777-1", chain_binary=chain_binary or "cronosd")
+        w3_wait_for_block(c.w3, 1)
+        yield c
     finally:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         # proc.terminate()

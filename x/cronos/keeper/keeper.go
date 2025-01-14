@@ -2,19 +2,24 @@ package keeper
 
 import (
 	"fmt"
+	"math/big"
 	"strings"
 
 	"cosmossdk.io/errors"
-	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 
-	"github.com/tendermint/tendermint/libs/log"
+	"cosmossdk.io/log"
 
+	"cosmossdk.io/store/prefix"
+	storetypes "cosmossdk.io/store/types"
 	"github.com/cosmos/cosmos-sdk/codec"
-	"github.com/cosmos/cosmos-sdk/store/prefix"
-	storetypes "github.com/cosmos/cosmos-sdk/store/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
+	ibcfeetypes "github.com/cosmos/ibc-go/v8/modules/apps/29-fee/types"
+	clienttypes "github.com/cosmos/ibc-go/v8/modules/core/02-client/types"
+	channeltypes "github.com/cosmos/ibc-go/v8/modules/core/04-channel/types"
+	ibcexported "github.com/cosmos/ibc-go/v8/modules/core/exported"
+	cronosprecompiles "github.com/crypto-org-chain/cronos/v2/x/cronos/keeper/precompiles"
 	"github.com/crypto-org-chain/cronos/v2/x/cronos/types"
 	"github.com/ethereum/go-ethereum/common"
 	// this line is used by starport scaffolding # ibc/keeper/import
@@ -30,8 +35,6 @@ type (
 		bankKeeper types.BankKeeper
 		// ibc transfer operations
 		transferKeeper types.TransferKeeper
-		// gravity bridge keeper
-		gravityKeeper types.GravityKeeper
 		// ethermint evm keeper
 		evmKeeper types.EvmKeeper
 		// account keeper
@@ -51,7 +54,6 @@ func NewKeeper(
 	memKey storetypes.StoreKey,
 	bankKeeper types.BankKeeper,
 	transferKeeper types.TransferKeeper,
-	gravityKeeper types.GravityKeeper,
 	evmKeeper types.EvmKeeper,
 	accountKeeper types.AccountKeeper,
 	authority string,
@@ -67,7 +69,6 @@ func NewKeeper(
 		memKey:         memKey,
 		bankKeeper:     bankKeeper,
 		transferKeeper: transferKeeper,
-		gravityKeeper:  gravityKeeper,
 		evmKeeper:      evmKeeper,
 		accountKeeper:  accountKeeper,
 		authority:      authority,
@@ -202,7 +203,6 @@ func (k Keeper) OnRecvVouchers(
 	err := k.ConvertVouchersToEvmCoins(cacheCtx, receiver, tokens)
 	if err == nil {
 		commit()
-		ctx.EventManager().EmitEvents(cacheCtx.EventManager().Events())
 	} else {
 		k.Logger(ctx).Error(
 			fmt.Sprintf("Failed to convert vouchers to evm tokens for receiver %s, coins %s. Receive error %s",
@@ -210,7 +210,7 @@ func (k Keeper) OnRecvVouchers(
 	}
 }
 
-func (k Keeper) GetAccount(ctx sdk.Context, addr sdk.AccAddress) authtypes.AccountI {
+func (k Keeper) GetAccount(ctx sdk.Context, addr sdk.AccAddress) sdk.AccountI {
 	return k.accountKeeper.GetAccount(ctx, addr)
 }
 
@@ -276,4 +276,89 @@ func (k Keeper) RegisterOrUpdateTokenMapping(ctx sdk.Context, msg *types.MsgUpda
 	}
 
 	return nil
+}
+
+func (k Keeper) onPacketResult(
+	ctx sdk.Context,
+	packet channeltypes.Packet,
+	acknowledgement bool,
+	relayer sdk.AccAddress,
+	contractAddress,
+	packetSenderAddress string,
+) error {
+	sender, err := sdk.AccAddressFromBech32(packetSenderAddress)
+	if err != nil {
+		return fmt.Errorf("invalid bech32 address: %s, err: %w", packetSenderAddress, err)
+	}
+	senderAddr := common.BytesToAddress(sender)
+	contractAddr := common.HexToAddress(contractAddress)
+	if senderAddr != contractAddr {
+		return fmt.Errorf("sender is not authenticated: expected %s, got %s", senderAddr, contractAddr)
+	}
+	data, err := cronosprecompiles.OnPacketResultCallback(packet.SourceChannel, packet.Sequence, acknowledgement)
+	if err != nil {
+		return err
+	}
+	gasLimit := k.GetParams(ctx).MaxCallbackGas
+	_, _, err = k.CallEVM(ctx, &senderAddr, data, big.NewInt(0), gasLimit)
+	return err
+}
+
+func (k Keeper) IBCOnAcknowledgementPacketCallback(
+	ctx sdk.Context,
+	packet channeltypes.Packet,
+	acknowledgement []byte,
+	relayer sdk.AccAddress,
+	contractAddress,
+	packetSenderAddress string,
+) error {
+	// the ack is wrapped by fee middleware
+	var ack ibcfeetypes.IncentivizedAcknowledgement
+	if err := k.cdc.UnmarshalJSON(acknowledgement, &ack); err != nil {
+		return err
+	}
+	if !ack.Success() {
+		return k.onPacketResult(ctx, packet, false, relayer, contractAddress, packetSenderAddress)
+	}
+	var res channeltypes.Acknowledgement
+	if err := k.cdc.UnmarshalJSON(ack.AppAcknowledgement, &res); err != nil {
+		return err
+	}
+	return k.onPacketResult(ctx, packet, res.Success(), relayer, contractAddress, packetSenderAddress)
+}
+
+func (k Keeper) IBCOnTimeoutPacketCallback(
+	ctx sdk.Context,
+	packet channeltypes.Packet,
+	relayer sdk.AccAddress,
+	contractAddress,
+	packetSenderAddress string,
+) error {
+	return k.onPacketResult(ctx, packet, false, relayer, contractAddress, packetSenderAddress)
+}
+
+func (k Keeper) IBCReceivePacketCallback(
+	ctx sdk.Context,
+	packet ibcexported.PacketI,
+	ack ibcexported.Acknowledgement,
+	contractAddress string,
+) error {
+	return nil
+}
+
+func (k Keeper) IBCSendPacketCallback(
+	ctx sdk.Context,
+	sourcePort string,
+	sourceChannel string,
+	timeoutHeight clienttypes.Height,
+	timeoutTimestamp uint64,
+	packetData []byte,
+	contractAddress,
+	packetSenderAddress string,
+) error {
+	return nil
+}
+
+func (k Keeper) GetBlockList(ctx sdk.Context) []byte {
+	return ctx.KVStore(k.storeKey).Get(types.KeyPrefixBlockList)
 }

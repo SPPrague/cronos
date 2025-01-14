@@ -1,4 +1,11 @@
-{ lib, stdenv, buildGoModule, fetchFromGitHub, libobjc, IOKit }:
+{
+  lib,
+  stdenv,
+  buildGoModule,
+  fetchFromGitHub,
+  libobjc,
+  IOKit,
+}:
 
 let
   # A list of binaries to put into separate outputs
@@ -10,16 +17,16 @@ let
 in
 buildGoModule rec {
   pname = "go-ethereum";
-  version = "1.10.15";
+  version = "1.11.6";
 
   src = fetchFromGitHub {
     owner = "ethereum";
     repo = pname;
     rev = "v${version}";
-    sha256 = "0f6n9rg42ph47mvykc9f0lf99yzwqy4jm7mlzyks4l6i6fl1g3q1";
+    sha256 = "sha256-mZ11xan3MGgaUORbiQczKrXSrxzjvQMhZbpHnEal11Y=";
   };
 
-  vendorSha256 = "1s5yfpk2yn7f3zwjl2fdrh6c63ki2b8rlmnlss27yxibsidaj0yd";
+  vendorHash = "sha256-rjSGR2ie5sFK2OOo4HUZ6+hrDlQuUDtyTKn0sh8jFBY=";
 
   doCheck = false;
 
@@ -27,7 +34,10 @@ buildGoModule rec {
 
   # Move binaries to separate outputs and symlink them back to $out
   postInstall = lib.concatStringsSep "\n" (
-    builtins.map (bin: "mkdir -p \$${bin}/bin && mv $out/bin/${bin} \$${bin}/bin/ && ln -s \$${bin}/bin/${bin} $out/bin/") bins
+    builtins.map (
+      bin:
+      "mkdir -p \$${bin}/bin && mv $out/bin/${bin} \$${bin}/bin/ && ln -s \$${bin}/bin/${bin} $out/bin/"
+    ) bins
   );
 
   subPackages = [
@@ -42,19 +52,27 @@ buildGoModule rec {
     "cmd/faucet"
     "cmd/geth"
     "cmd/p2psim"
-    "cmd/puppeth"
     "cmd/rlpdump"
     "cmd/utils"
   ];
 
   # Fix for usb-related segmentation faults on darwin
-  propagatedBuildInputs =
-    lib.optionals stdenv.isDarwin [ libobjc IOKit ];
+  propagatedBuildInputs = lib.optionals stdenv.isDarwin [
+    libobjc
+    IOKit
+  ];
 
   meta = with lib; {
     homepage = "https://geth.ethereum.org/";
     description = "Official golang implementation of the Ethereum protocol";
-    license = with licenses; [ lgpl3Plus gpl3Plus ];
-    maintainers = with maintainers; [ adisbladis lionello RaghavSood ];
+    license = with licenses; [
+      lgpl3Plus
+      gpl3Plus
+    ];
+    maintainers = with maintainers; [
+      adisbladis
+      lionello
+      RaghavSood
+    ];
   };
 }

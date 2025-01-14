@@ -8,8 +8,6 @@ import (
 	"testing"
 
 	iavlcache "github.com/cosmos/iavl/cache"
-	lru "github.com/hashicorp/golang-lru"
-	"github.com/hashicorp/golang-lru/simplelru"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/btree"
 )
@@ -34,31 +32,47 @@ func BenchmarkRandomGet(b *testing.B) {
 	}
 
 	snapshotDir := b.TempDir()
-	err := tree.WriteSnapshot(snapshotDir, true)
+	err := tree.WriteSnapshot(snapshotDir)
 	require.NoError(b, err)
 	snapshot, err := OpenSnapshot(snapshotDir)
 	require.NoError(b, err)
 	defer snapshot.Close()
-	diskTree := NewFromSnapshot(snapshot, true, 0)
 
-	require.Equal(b, targetValue, tree.Get(targetKey))
-	require.Equal(b, targetValue, diskTree.Get(targetKey))
-	require.Equal(b, targetValue, snapshot.Get(targetKey))
-
-	b.ResetTimer()
 	b.Run("memiavl", func(b *testing.B) {
+		require.Equal(b, targetValue, tree.Get(targetKey))
+
+		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			_ = tree.Get(targetKey)
 		}
 	})
 	b.Run("memiavl-disk", func(b *testing.B) {
+		diskTree := NewFromSnapshot(snapshot, true, 0)
+		require.Equal(b, targetValue, diskTree.Get(targetKey))
+
+		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			_ = diskTree.Get(targetKey)
 		}
 	})
-	b.Run("snapshot-get", func(b *testing.B) {
+	b.Run("memiavl-disk-cache-hit", func(b *testing.B) {
+		diskTree := NewFromSnapshot(snapshot, true, 1)
+		require.Equal(b, targetValue, diskTree.Get(targetKey))
+
+		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_ = snapshot.Get(targetKey)
+			_ = diskTree.Get(targetKey)
+		}
+	})
+	b.Run("memiavl-disk-cache-miss", func(b *testing.B) {
+		diskTree := NewFromSnapshot(snapshot, true, 0)
+		// enforce an empty cache to emulate cache miss
+		diskTree.cache = iavlcache.New(0)
+		require.Equal(b, targetValue, diskTree.Get(targetKey))
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = diskTree.Get(targetKey)
 		}
 	})
 	b.Run("btree-degree-2", func(b *testing.B) {
@@ -91,34 +105,6 @@ func BenchmarkRandomGet(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			_, _ = bt32.Get(targetItem)
-		}
-	})
-	b.Run("lru-cache", func(b *testing.B) {
-		cache, err := lru.NewARC(amount)
-		require.NoError(b, err)
-		for _, item := range items {
-			cache.Add(string(item.key), item.value)
-		}
-		v, _ := cache.Get(string(targetItem.key))
-		require.Equal(b, targetValue, v.([]byte))
-
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			_, _ = cache.Get(string(targetKey))
-		}
-	})
-	b.Run("simplelru", func(b *testing.B) {
-		cache, err := simplelru.NewLRU(amount, nil)
-		require.NoError(b, err)
-		for _, item := range items {
-			cache.Add(string(item.key), item.value)
-		}
-		v, _ := cache.Get(string(targetItem.key))
-		require.Equal(b, targetValue, v.([]byte))
-
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			_, _ = cache.Get(string(targetKey))
 		}
 	})
 	b.Run("iavl-lru", func(b *testing.B) {

@@ -2,15 +2,18 @@ package middleware
 
 import (
 	"cosmossdk.io/errors"
+	sdkmath "cosmossdk.io/math"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
-	capabilitytypes "github.com/cosmos/cosmos-sdk/x/capability/types"
-	transferTypes "github.com/cosmos/ibc-go/v5/modules/apps/transfer/types"
-	channeltypes "github.com/cosmos/ibc-go/v5/modules/core/04-channel/types"
-	porttypes "github.com/cosmos/ibc-go/v5/modules/core/05-port/types"
-	"github.com/cosmos/ibc-go/v5/modules/core/exported"
+	capabilitytypes "github.com/cosmos/ibc-go/modules/capability/types"
+	transferTypes "github.com/cosmos/ibc-go/v8/modules/apps/transfer/types"
+	channeltypes "github.com/cosmos/ibc-go/v8/modules/core/04-channel/types"
+	porttypes "github.com/cosmos/ibc-go/v8/modules/core/05-port/types"
+	"github.com/cosmos/ibc-go/v8/modules/core/exported"
 	cronoskeeper "github.com/crypto-org-chain/cronos/v2/x/cronos/keeper"
 )
+
+var _ porttypes.UpgradableModule = (*IBCConversionModule)(nil)
 
 // IBCConversionModule implements the ICS26 interface.
 type IBCConversionModule struct {
@@ -180,7 +183,7 @@ func (im IBCConversionModule) getFungibleTokenPacketData(packet channeltypes.Pac
 
 func (im IBCConversionModule) convertVouchers(ctx sdk.Context, data transferTypes.FungibleTokenPacketData, denom string, isSender bool) error {
 	// parse the transfer amount
-	transferAmount, ok := sdk.NewIntFromString(data.Amount)
+	transferAmount, ok := sdkmath.NewIntFromString(data.Amount)
 	if !ok {
 		return errors.Wrapf(transferTypes.ErrInvalidAmount,
 			"unable to parse transfer amount (%s) into sdk.Int in middleware", data.Amount)
@@ -226,4 +229,47 @@ func (im IBCConversionModule) getIbcDenomFromPacketAndData(
 	prefixedDenom := sourcePrefix + data.Denom
 	denomTrace := transferTypes.ParseDenomTrace(prefixedDenom)
 	return denomTrace.IBCDenom()
+}
+
+// OnChanUpgradeInit implements the IBCModule interface
+func (im IBCConversionModule) OnChanUpgradeInit(
+	ctx sdk.Context,
+	portID string,
+	channelID string,
+	proposedOrder channeltypes.Order,
+	proposedConnectionHops []string,
+	proposedVersion string,
+) (string, error) {
+	cbs, ok := im.app.(porttypes.UpgradableModule)
+	if !ok {
+		return "", errors.Wrap(porttypes.ErrInvalidRoute, "upgrade route not found to module in application callstack")
+	}
+	return cbs.OnChanUpgradeInit(ctx, portID, channelID, proposedOrder, proposedConnectionHops, proposedVersion)
+}
+
+// OnChanUpgradeAck implements the IBCModule interface
+func (im IBCConversionModule) OnChanUpgradeAck(ctx sdk.Context, portID, channelID, counterpartyVersion string) error {
+	cbs, ok := im.app.(porttypes.UpgradableModule)
+	if !ok {
+		return errors.Wrap(porttypes.ErrInvalidRoute, "upgrade route not found to module in application callstack")
+	}
+	return cbs.OnChanUpgradeAck(ctx, portID, channelID, counterpartyVersion)
+}
+
+// OnChanUpgradeOpen implements the IBCModule interface
+func (im IBCConversionModule) OnChanUpgradeOpen(ctx sdk.Context, portID, channelID string, proposedOrder channeltypes.Order, proposedConnectionHops []string, proposedVersion string) {
+	cbs, ok := im.app.(porttypes.UpgradableModule)
+	if !ok {
+		panic(errors.Wrap(porttypes.ErrInvalidRoute, "upgrade route not found to module in application callstack"))
+	}
+	cbs.OnChanUpgradeOpen(ctx, portID, channelID, proposedOrder, proposedConnectionHops, proposedVersion)
+}
+
+// OnChanUpgradeTry implement s the IBCModule interface
+func (im IBCConversionModule) OnChanUpgradeTry(ctx sdk.Context, portID, channelID string, proposedOrder channeltypes.Order, proposedConnectionHops []string, counterpartyVersion string) (string, error) {
+	cbs, ok := im.app.(porttypes.UpgradableModule)
+	if !ok {
+		return "", errors.Wrap(porttypes.ErrInvalidRoute, "upgrade route not found to module in application callstack")
+	}
+	return cbs.OnChanUpgradeTry(ctx, portID, channelID, proposedOrder, proposedConnectionHops, counterpartyVersion)
 }

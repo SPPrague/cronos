@@ -1,6 +1,5 @@
 import json
 import subprocess
-import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -12,26 +11,77 @@ from eth_utils import abi, big_endian_to_int
 from hexbytes import HexBytes
 from pystarport import cluster, ports
 
-from .cosmoscli import CosmosCLI
+from .cosmoscli import CosmosCLI, module_address
+from .network import Geth
 from .utils import (
     ADDRS,
     CONTRACTS,
     KEYS,
     Greeter,
     RevertTestContract,
-    approve_proposal,
+    assert_gov_params,
     build_batch_tx,
     contract_address,
     contract_path,
     deploy_contract,
+    derive_new_account,
+    get_expedited_params,
     get_receipts_by_block,
+    get_sync_info,
     modify_command_in_supervisor_config,
     send_transaction,
     send_txs,
+    sign_transaction,
+    submit_any_proposal,
+    submit_gov_proposal,
+    w3_wait_for_block,
     wait_for_block,
     wait_for_new_blocks,
     wait_for_port,
 )
+
+
+def test_ica_enabled(cronos, tmp_path):
+    cli = cronos.cosmos_cli()
+    param0 = cli.query_params("gov")
+    param1 = get_expedited_params(param0)
+    # governance module account as signer
+    authority = module_address("gov")
+    submit_gov_proposal(
+        cronos,
+        tmp_path,
+        messages=[
+            {
+                "@type": "/cosmos.gov.v1.MsgUpdateParams",
+                "authority": authority,
+                "params": {
+                    **param0,
+                    **param1,
+                },
+            }
+        ],
+    )
+    assert_gov_params(cli, param0)
+
+    p = cli.query_ica_params()
+    assert p["controller_enabled"]
+    p["controller_enabled"] = False
+    type = "/ibc.applications.interchain_accounts.controller.v1.MsgUpdateParams"
+    submit_gov_proposal(
+        cronos,
+        tmp_path,
+        messages=[
+            {
+                "@type": type,
+                "signer": authority,
+                "params": p,
+            }
+        ],
+        deposit="5basetcro",
+        expedited=True,
+    )
+    p = cli.query_ica_params()
+    assert not p["controller_enabled"]
 
 
 def test_basic(cluster):
@@ -42,6 +92,9 @@ def test_basic(cluster):
 def test_send_transaction(cluster):
     "test eth_sendTransaction api"
     w3 = cluster.w3
+    # wait 1s to avoid unlock error
+    if isinstance(cluster, Geth):
+        time.sleep(1)
     txhash = w3.eth.send_transaction(
         {
             "from": ADDRS["validator"],
@@ -51,6 +104,7 @@ def test_send_transaction(cluster):
     )
     receipt = w3.eth.wait_for_transaction_receipt(txhash)
     assert receipt.status == 1
+    assert receipt.gasUsed == 21000
 
 
 def test_events(cluster, suspend_capture):
@@ -59,6 +113,7 @@ def test_events(cluster, suspend_capture):
         w3,
         CONTRACTS["TestERC20A"],
         key=KEYS["validator"],
+        exp_gas_used=641641,
     )
     tx = erc20.functions.transfer(ADDRS["community"], 10).build_transaction(
         {"from": ADDRS["validator"]}
@@ -116,7 +171,7 @@ def test_native_call(cronos):
     """
     test contract native call on cronos network
     - deploy test contract
-    - run native call, expect failure, becuase no native fund in contract
+    - run native call, expect failure, because no native fund in contract
     - send native tokens to contract account
     - run again, expect success and check balance
     """
@@ -171,10 +226,8 @@ def test_statesync(cronos):
     assert w3.eth.get_balance(ADDRS["community"]) == initial_balance + tx_value
 
     # Wait 5 more block (sometimes not enough blocks can not work)
-    wait_for_block(
-        cronos.cosmos_cli(0),
-        int(cronos.cosmos_cli(0).status()["SyncInfo"]["latest_block_height"]) + 5,
-    )
+    cli0 = cronos.cosmos_cli(0)
+    wait_for_block(cli0, cli0.block_height() + 5)
 
     # Check the transactions are added
     assert w3.eth.get_transaction(txhash_0) is not None
@@ -196,22 +249,25 @@ def test_statesync(cronos):
         clustercli.base_port(i),
         {
             "json-rpc": {
-                "address": "0.0.0.0:{EVMRPC_PORT}",
-                "ws-address": "0.0.0.0:{EVMRPC_PORT_WS}",
-            }
+                "address": "127.0.0.1:{EVMRPC_PORT}",
+                "ws-address": "127.0.0.1:{EVMRPC_PORT_WS}",
+            },
+            "memiavl": {
+                "enable": True,
+                "zero-copy": True,
+                "snapshot-interval": 5,
+            },
         },
     )
     clustercli.supervisor.startProcess(f"{clustercli.chain_id}-node{i}")
     # Wait 1 more block
-    wait_for_block(
-        clustercli.cosmos_cli(i),
-        int(cronos.cosmos_cli(0).status()["SyncInfo"]["latest_block_height"]) + 1,
-    )
+    wait_for_block(clustercli.cosmos_cli(i), cli0.block_height() + 1)
+    time.sleep(1)
 
     # check query chain state works
-    assert not clustercli.status(i)["SyncInfo"]["catching_up"]
+    assert not get_sync_info(clustercli.status(i))["catching_up"]
 
-    # check query old transaction does't work
+    # check query old transaction doesn't work
     # Get we3 provider
     base_port = ports.evmrpc_port(clustercli.base_port(i))
     print("json-rpc port:", base_port)
@@ -229,13 +285,10 @@ def test_statesync(cronos):
     txhash_2 = send_transaction(w3, tx, KEYS["validator"])["transactionHash"].hex()
     txhash_3 = greeter.transfer("world")["transactionHash"].hex()
     # Wait 1 more block
-    wait_for_block(
-        clustercli.cosmos_cli(i),
-        int(cronos.cosmos_cli(0).status()["SyncInfo"]["latest_block_height"]) + 1,
-    )
+    wait_for_block(clustercli.cosmos_cli(i), cli0.block_height() + 1)
 
     # check query chain state works
-    assert not clustercli.status(i)["SyncInfo"]["catching_up"]
+    assert not get_sync_info(clustercli.status(i))["catching_up"]
 
     # check query new transaction works
     assert statesync_w3.eth.get_transaction(txhash_2) is not None
@@ -245,17 +298,18 @@ def test_statesync(cronos):
         == initial_balance + tx_value + tx_value
     )
 
-    print("succesfully syncing")
+    print("successfully syncing")
     clustercli.supervisor.stopProcess(f"{clustercli.chain_id}-node{i}")
 
 
-def test_local_statesync(cronos):
+def test_local_statesync(cronos, tmp_path_factory):
     """
-    - init a new node
+    - init a new node, enable versiondb
     - dump snapshot on node0
     - load snapshot to the new node
     - restore the new node state from the snapshot
     - bootstrap cometbft state
+    - restore the versiondb from the snapshot
     - startup the node, should sync
     - cleanup
     """
@@ -263,10 +317,12 @@ def test_local_statesync(cronos):
     cli0 = cronos.cosmos_cli(0)
     wait_for_block(cli0, 6)
 
-    sync_info = cli0.status()["SyncInfo"]
-    height = int(sync_info["latest_block_height"])
+    sync_info = get_sync_info(cli0.status())
     cronos.supervisorctl("stop", "cronos_777-1-node0")
     tarball = cli0.data_dir / "snapshot.tar.gz"
+    height = int(sync_info["latest_block_height"])
+    # round down to multiples of memiavl.snapshot-interval
+    height -= height % 5
 
     if height not in set(item.height for item in cli0.list_snapshot()):
         cli0.export_snapshot(height)
@@ -275,63 +331,83 @@ def test_local_statesync(cronos):
     cronos.supervisorctl("start", "cronos_777-1-node0")
     wait_for_port(ports.evmrpc_port(cronos.base_port(0)))
 
-    with tempfile.TemporaryDirectory() as home:
-        print("home", home)
+    home = tmp_path_factory.mktemp("local_statesync")
+    print("home", home)
 
-        i = len(cronos.config["validators"])
-        base_port = 26650 + i * 10
-        node_rpc = "tcp://127.0.0.1:%d" % ports.rpc_port(base_port)
-        cli = CosmosCLI.init(
-            "local_statesync",
-            Path(home),
-            node_rpc,
-            cronos.chain_binary,
-            "cronos_777-1",
-        )
+    i = len(cronos.config["validators"])
+    base_port = 26650 + i * 10
+    node_rpc = "tcp://127.0.0.1:%d" % ports.rpc_port(base_port)
+    cli = CosmosCLI.init(
+        "local_statesync",
+        Path(home),
+        node_rpc,
+        cronos.chain_binary,
+        "cronos_777-1",
+    )
 
-        # init the configs
-        peers = ",".join(
-            [
-                "tcp://%s@%s:%d"
-                % (
-                    cronos.cosmos_cli(i).node_id(),
-                    val["hostname"],
-                    ports.p2p_port(val["base_port"]),
-                )
-                for i, val in enumerate(cronos.config["validators"])
-            ]
-        )
-        rpc_servers = ",".join(cronos.node_rpc(i) for i in range(2))
-        trust_height = int(sync_info["latest_block_height"])
-        trust_hash = sync_info["latest_block_hash"]
+    # init the configs
+    peers = ",".join(
+        [
+            "tcp://%s@%s:%d"
+            % (
+                cronos.cosmos_cli(i).node_id(),
+                val["hostname"],
+                ports.p2p_port(val["base_port"]),
+            )
+            for i, val in enumerate(cronos.config["validators"])
+        ]
+    )
+    rpc_servers = ",".join(cronos.node_rpc(i) for i in range(2))
+    trust_height = int(sync_info["latest_block_height"])
+    trust_hash = sync_info["latest_block_hash"]
 
-        cluster.edit_tm_cfg(
-            Path(home) / "config/config.toml",
-            base_port,
-            peers,
-            {
-                "statesync": {
-                    "rpc_servers": rpc_servers,
-                    "trust_height": trust_height,
-                    "trust_hash": trust_hash,
-                },
+    cluster.edit_tm_cfg(
+        Path(home) / "config/config.toml",
+        base_port,
+        peers,
+        {
+            "statesync": {
+                "rpc_servers": rpc_servers,
+                "trust_height": trust_height,
+                "trust_hash": trust_hash,
             },
-        )
+        },
+    )
+    cluster.edit_app_cfg(
+        Path(home) / "config/app.toml",
+        base_port,
+        {
+            "json-rpc": {
+                "address": f"127.0.0.1:{ports.evmrpc_port(base_port)}",
+                "ws-address": f"127.0.0.1:{ports.evmrpc_ws_port(base_port)}",
+            },
+            "versiondb": {
+                "enable": True,
+            },
+        },
+    )
 
-        # restore the states
-        cli.load_snapshot(tarball)
-        print(cli.list_snapshot())
-        cli.restore_snapshot(height)
-        cli.bootstrap_state()
+    # restore the states
+    cli.load_snapshot(tarball)
+    print(cli.list_snapshot())
+    cli.restore_snapshot(height)
+    cli.bootstrap_state()
+    cli.restore_versiondb(height)
 
-        with subprocess.Popen(
-            [cronos.chain_binary, "start", "--home", home],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        ):
-            wait_for_port(ports.rpc_port(base_port))
-            # check the node sync normally
-            wait_for_new_blocks(cli, 2)
+    with subprocess.Popen(
+        [cronos.chain_binary, "start", "--home", home],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    ):
+        wait_for_port(ports.rpc_port(base_port))
+        # check the node sync normally
+        wait_for_new_blocks(cli, 2)
+        # check grpc works
+        print("distribution", cli.distribution_community(height=height))
+        with pytest.raises(Exception) as exc_info:
+            cli.distribution_community(height=height - 1)
+
+        assert "collections: not found" in exc_info.value.args[0]
 
 
 def test_transaction(cronos):
@@ -515,7 +591,7 @@ def test_exception(cluster):
     receipt = send_transaction(
         w3, contract.functions.transfer(5 * (10**18)).build_transaction()
     )
-    assert receipt.status == 1, "should be succesfully"
+    assert receipt.status == 1, "should be successfully"
     assert 5 * (10**18) == contract.caller.query()
 
 
@@ -560,7 +636,9 @@ def test_message_call(cronos):
 
     begin = time.time()
     tx["gas"] = w3.eth.estimate_gas(tx)
-    assert time.time() - begin < 5  # should finish in reasonable time
+    elapsed = time.time() - begin
+    print("elapsed:", elapsed)
+    assert elapsed < 5  # should finish in reasonable time
 
     receipt = send_transaction(w3, tx, KEYS["community"])
     assert 23828976 == receipt.cumulativeGasUsed
@@ -643,6 +721,9 @@ def test_batch_tx(cronos):
         == receipts[0].gasUsed + receipts[1].gasUsed + receipts[2].gasUsed
     )
 
+    # check nonce
+    assert w3.eth.get_transaction_count(sender) == nonce + 3
+
     # check traceTransaction
     rsps = [
         w3.provider.make_request("debug_traceTransaction", [h.hex()])["result"]
@@ -711,14 +792,20 @@ def test_failed_transfer_tx(cronos):
 
     # check traceTransaction
     rsps = [
-        w3.provider.make_request("debug_traceTransaction", [h.hex()])["result"]
-        for h in tx_hashes
+        w3.provider.make_request("debug_traceTransaction", [h.hex()]) for h in tx_hashes
     ]
     for rsp, receipt in zip(rsps, receipts):
-        # FIXME https://github.com/evmos/ethermint/issues/1185
-        # trace transaction always return success for simple transfer tx
-        assert not rsp["failed"]
-        assert receipt.gasUsed == rsp["gas"]
+        if receipt.status == 1:
+            result = rsp["result"]
+            assert not result["failed"]
+            assert receipt.gasUsed == result["gas"]
+        else:
+            assert rsp["result"] == {
+                "failed": False,
+                "gas": 21000,
+                "returnValue": "",
+                "structLogs": [],
+            }
 
 
 def test_log0(cluster):
@@ -759,7 +846,8 @@ def test_contract(cronos):
 origin_cmd = None
 
 
-@pytest.mark.parametrize("max_gas_wanted", [80000000, 40000000, 25000000, 500000])
+@pytest.mark.unmarked
+@pytest.mark.parametrize("max_gas_wanted", [80000000, 40000000, 25000000, 500000, None])
 def test_tx_inclusion(cronos, max_gas_wanted):
     """
     - send multiple heavy transactions at the same time.
@@ -772,6 +860,8 @@ def test_tx_inclusion(cronos, max_gas_wanted):
         global origin_cmd
         if origin_cmd is None:
             origin_cmd = cmd
+        if max_gas_wanted is None:
+            return origin_cmd
         return f"{origin_cmd} --evm.max-tx-gas-wanted {max_gas_wanted}"
 
     modify_command_in_supervisor_config(
@@ -781,8 +871,12 @@ def test_tx_inclusion(cronos, max_gas_wanted):
     cronos.supervisorctl("update")
     wait_for_port(ports.evmrpc_port(cronos.base_port(0)))
 
-    w3 = cronos.w3
+    # reset to origin_cmd only
+    if max_gas_wanted is None:
+        return
+
     cli = cronos.cosmos_cli()
+    w3 = cronos.w3
     block_gas_limit = 81500000
     tx_gas_limit = 80000000
     max_tx_in_block = block_gas_limit // min(max_gas_wanted, tx_gas_limit)
@@ -798,12 +892,12 @@ def test_tx_inclusion(cronos, max_gas_wanted):
     # the transactions should be included according to max_gas_wanted
     if max_tx_in_block == 1:
         for block_num, next_block_num in zip(block_nums, block_nums[1:]):
-            assert next_block_num == block_num + 1
+            assert next_block_num == block_num + 1 or next_block_num == block_num + 2
     else:
         for num in block_nums[1:max_tx_in_block]:
             assert num == block_nums[0]
         for num in block_nums[max_tx_in_block:]:
-            assert num == block_nums[0] + 1
+            assert num == block_nums[0] + 1 or num == block_nums[0] + 2
 
 
 def test_replay_protection(cronos):
@@ -825,35 +919,90 @@ def test_replay_protection(cronos):
         w3.eth.send_raw_transaction(HexBytes(raw))
 
 
+@pytest.mark.gov
 def test_submit_any_proposal(cronos, tmp_path):
-    # governance module account as granter
-    cli = cronos.cosmos_cli()
-    granter_addr = "crc10d07y265gmmuvt4z0w9aw880jnsr700jdufnyd"
-    grantee_addr = cli.address("signer1")
+    submit_any_proposal(cronos, tmp_path)
 
-    # this json can be obtained with `--generate-only` flag for respective cli calls
-    proposal_json = {
-        "messages": [
+
+@pytest.mark.gov
+def test_submit_send_enabled(cronos, tmp_path):
+    # check bank send enable
+    cli = cronos.cosmos_cli()
+    denoms = ["basetcro", "stake"]
+    assert len(cli.query_bank_send(*denoms)) == 0, "should be empty"
+    send_enable = [
+        {"denom": "basetcro"},
+        {"denom": "stake", "enabled": True},
+    ]
+    authority = module_address("gov")
+    submit_gov_proposal(
+        cronos,
+        tmp_path,
+        messages=[
             {
-                "@type": "/cosmos.feegrant.v1beta1.MsgGrantAllowance",
-                "granter": granter_addr,
-                "grantee": grantee_addr,
-                "allowance": {
-                    "@type": "/cosmos.feegrant.v1beta1.BasicAllowance",
-                    "spend_limit": [],
-                    "expiration": None,
-                },
+                "@type": "/cosmos.bank.v1beta1.MsgSetSendEnabled",
+                "authority": authority,
+                "sendEnabled": send_enable,
             }
         ],
-        "deposit": "1basetcro",
-    }
-    proposal_file = tmp_path / "proposal.json"
-    proposal_file.write_text(json.dumps(proposal_json))
-    rsp = cli.submit_gov_proposal(proposal_file, from_="community")
+    )
+    assert cli.query_bank_send(*denoms) == send_enable
+
+
+def test_block_stm_delete(cronos):
+    """
+    this test case revealed a bug in block-stm,
+    see: https://github.com/crypto-org-chain/go-block-stm/pull/11
+    """
+    w3 = cronos.w3
+    cli = cronos.cosmos_cli()
+    acc = derive_new_account(3)
+    sender = acc.address
+
+    # fund new sender
+    fund = 3000000000000000000
+    tx = {"to": sender, "value": fund, "gasPrice": w3.eth.gas_price}
+    send_transaction(w3, tx)
+    assert w3.eth.get_balance(sender, "latest") == fund
+    nonce = w3.eth.get_transaction_count(sender)
+    wait_for_new_blocks(cli, 1)
+    txhashes = []
+    total = 3
+    for n in range(total):
+        tx = {
+            "to": "0x2956c404227Cc544Ea6c3f4a36702D0FD73d20A2",
+            "value": fund // total,
+            "gas": 21000,
+            "maxFeePerGas": 6556868066901,
+            "maxPriorityFeePerGas": 1500000000,
+            "nonce": nonce + n,
+        }
+        signed = sign_transaction(w3, tx, acc.key)
+        txhash = w3.eth.send_raw_transaction(signed.rawTransaction)
+        txhashes.append(txhash)
+    for txhash in txhashes[0 : total - 1]:
+        res = w3.eth.wait_for_transaction_receipt(txhash)
+        assert res.status == 1
+    w3_wait_for_block(w3, w3.eth.block_number + 3, timeout=30)
+
+
+def test_multi_acc(cronos):
+    cli = cronos.cosmos_cli()
+    cli.make_multisig("multitest1", "signer1", "signer2")
+    multi_addr = cli.address("multitest1")
+    signer1 = cli.address("signer1")
+    cli.transfer(signer1, multi_addr, "1basetcro")
+    acc = cli.account(multi_addr)
+    res = cli.account_by_num(acc["account"]["value"]["base_account"]["account_number"])
+    assert res["account_address"] == multi_addr
+
+
+def test_textual(cronos):
+    cli = cronos.cosmos_cli()
+    rsp = cli.transfer(
+        cli.address("validator"),
+        cli.address("signer2"),
+        "1basetcro",
+        sign_mode="textual",
+    )
     assert rsp["code"] == 0, rsp["raw_log"]
-
-    approve_proposal(cronos, rsp)
-
-    grant_detail = cli.query_grant(granter_addr, grantee_addr)
-    assert grant_detail["granter"] == granter_addr
-    assert grant_detail["grantee"] == grantee_addr

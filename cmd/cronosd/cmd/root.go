@@ -4,45 +4,51 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path/filepath"
+	"slices"
 
-	"github.com/cosmos/cosmos-sdk/simapp/params"
+	"github.com/cosmos/cosmos-sdk/server"
+	simtestutil "github.com/cosmos/cosmos-sdk/testutil/sims"
 	"github.com/cosmos/cosmos-sdk/types/module"
+	"github.com/cosmos/cosmos-sdk/types/tx/signing"
 
-	"github.com/spf13/cast"
+	"cosmossdk.io/log"
+	tmcfg "github.com/cometbft/cometbft/config"
+	dbm "github.com/cosmos/cosmos-db"
+	"github.com/cosmos/cosmos-sdk/x/auth/tx"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	tmcfg "github.com/tendermint/tendermint/config"
-	tmcli "github.com/tendermint/tendermint/libs/cli"
-	"github.com/tendermint/tendermint/libs/log"
-	dbm "github.com/tendermint/tm-db"
+	"github.com/spf13/viper"
 
+	confixcmd "cosmossdk.io/tools/confix/cmd"
+	cmtcli "github.com/cometbft/cometbft/libs/cli"
 	"github.com/cosmos/cosmos-sdk/client"
-	"github.com/cosmos/cosmos-sdk/client/config"
+	clientcfg "github.com/cosmos/cosmos-sdk/client/config"
 	"github.com/cosmos/cosmos-sdk/client/debug"
 	"github.com/cosmos/cosmos-sdk/client/flags"
 	"github.com/cosmos/cosmos-sdk/client/pruning"
 	"github.com/cosmos/cosmos-sdk/client/rpc"
 	"github.com/cosmos/cosmos-sdk/client/snapshot"
-	"github.com/cosmos/cosmos-sdk/server"
 	servertypes "github.com/cosmos/cosmos-sdk/server/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	authcmd "github.com/cosmos/cosmos-sdk/x/auth/client/cli"
+	txmodule "github.com/cosmos/cosmos-sdk/x/auth/tx/config"
 	"github.com/cosmos/cosmos-sdk/x/auth/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	"github.com/cosmos/cosmos-sdk/x/crisis"
 	genutilcli "github.com/cosmos/cosmos-sdk/x/genutil/client/cli"
-
+	rosettaCmd "github.com/cosmos/rosetta/cmd"
 	ethermintclient "github.com/evmos/ethermint/client"
 	"github.com/evmos/ethermint/crypto/hd"
 	ethermintserver "github.com/evmos/ethermint/server"
 	servercfg "github.com/evmos/ethermint/server/config"
+	srvflags "github.com/evmos/ethermint/server/flags"
 	ethermint "github.com/evmos/ethermint/types"
 
+	memiavlcfg "github.com/crypto-org-chain/cronos/store/config"
 	"github.com/crypto-org-chain/cronos/v2/app"
-	cronoscfg "github.com/crypto-org-chain/cronos/v2/app/config"
 	"github.com/crypto-org-chain/cronos/v2/cmd/cronosd/opendb"
 	"github.com/crypto-org-chain/cronos/v2/x/cronos"
+	e2eecli "github.com/crypto-org-chain/cronos/v2/x/e2ee/client/cli"
 	// this line is used by starport scaffolding # stargate/root/import
 )
 
@@ -52,11 +58,18 @@ var ChainID string
 
 // NewRootCmd creates a new root command for simd. It is called once in the
 // main function.
-func NewRootCmd() (*cobra.Command, params.EncodingConfig) {
+func NewRootCmd() *cobra.Command {
 	// Set config for prefixes
 	app.SetConfig()
 
-	encodingConfig := app.MakeEncodingConfig()
+	tempApp := app.New(
+		log.NewNopLogger(), dbm.NewMemDB(), nil, true,
+		simtestutil.NewAppOptionsWithFlagHome(app.DefaultNodeHome),
+	)
+	encodingConfig := tempApp.EncodingConfig()
+	// for decoding legacy transactions whose messages are removed
+	app.RegisterLegacyCodec(encodingConfig.Amino)
+	app.RegisterLegacyInterfaces(encodingConfig.InterfaceRegistry)
 	initClientCtx := client.Context{}.
 		WithCodec(encodingConfig.Codec).
 		WithInterfaceRegistry(encodingConfig.InterfaceRegistry).
@@ -64,10 +77,15 @@ func NewRootCmd() (*cobra.Command, params.EncodingConfig) {
 		WithLegacyAmino(encodingConfig.Amino).
 		WithInput(os.Stdin).
 		WithAccountRetriever(types.AccountRetriever{}).
-		WithBroadcastMode(flags.BroadcastBlock).
+		WithBroadcastMode(flags.BroadcastSync).
 		WithHomeDir(app.DefaultNodeHome).
 		WithKeyringOptions(hd.EthSecp256k1Option()).
 		WithViper(EnvPrefix)
+
+	initClientCtx, err := clientcfg.ReadDefaultValuesFromDefaultClientConfig(initClientCtx)
+	if err != nil {
+		panic(err)
+	}
 
 	rootCmd := &cobra.Command{
 		Use:   app.Name + "d",
@@ -77,16 +95,37 @@ func NewRootCmd() (*cobra.Command, params.EncodingConfig) {
 			cmd.SetOut(cmd.OutOrStdout())
 			cmd.SetErr(cmd.ErrOrStderr())
 
+			initClientCtx = initClientCtx.WithCmdContext(cmd.Context())
 			initClientCtx, err := client.ReadPersistentCommandFlags(initClientCtx, cmd.Flags())
 			if err != nil {
 				return err
 			}
 
-			initClientCtx, err = config.ReadFromClientConfig(initClientCtx)
+			initClientCtx, err = clientcfg.ReadFromClientConfig(initClientCtx)
 			if err != nil {
 				return err
 			}
 
+			// This needs to go after ReadFromClientConfig, as that function
+			// sets the RPC client needed for SIGN_MODE_TEXTUAL. This sign mode
+			// is only available if the client is online.
+			if !initClientCtx.Offline {
+				enabledSignModes := slices.Clone(tx.DefaultSignModes)
+				enabledSignModes = append(enabledSignModes, signing.SignMode_SIGN_MODE_TEXTUAL)
+				txConfigOpts := tx.ConfigOptions{
+					EnabledSignModes:           enabledSignModes,
+					TextualCoinMetadataQueryFn: txmodule.NewGRPCCoinMetadataQueryFn(initClientCtx),
+				}
+				txConfig, err := tx.NewTxConfigWithOptions(
+					initClientCtx.Codec,
+					txConfigOpts,
+				)
+				if err != nil {
+					return err
+				}
+
+				initClientCtx = initClientCtx.WithTxConfig(txConfig)
+			}
 			if err := client.SetCmdClientContextHandler(initClientCtx, cmd); err != nil {
 				return err
 			}
@@ -97,44 +136,49 @@ func NewRootCmd() (*cobra.Command, params.EncodingConfig) {
 		},
 	}
 
-	initRootCmd(rootCmd, encodingConfig)
+	initRootCmd(rootCmd, encodingConfig, tempApp.BasicModuleManager)
 	overwriteFlagDefaults(rootCmd, map[string]string{
 		flags.FlagChainID:        ChainID,
 		flags.FlagKeyringBackend: "os",
 	})
 
-	return rootCmd, encodingConfig
+	autoCliOpts := tempApp.AutoCliOpts()
+	autoCliOpts.ClientCtx = initClientCtx
+
+	if err := autoCliOpts.EnhanceRootCommand(rootCmd); err != nil {
+		panic(err)
+	}
+
+	return rootCmd
 }
 
-func initRootCmd(rootCmd *cobra.Command, encodingConfig params.EncodingConfig) {
+func initRootCmd(
+	rootCmd *cobra.Command,
+	encodingConfig ethermint.EncodingConfig,
+	basicManager module.BasicManager,
+) {
 	cfg := sdk.GetConfig()
 	cfg.Seal()
 
-	a := appCreator{encodingConfig}
 	rootCmd.AddCommand(
 		ethermintclient.ValidateChainID(
-			WrapInitCmd(app.DefaultNodeHome),
+			genutilcli.InitCmd(basicManager, app.DefaultNodeHome),
 		),
-		genutilcli.CollectGenTxsCmd(banktypes.GenesisBalancesIterator{}, app.DefaultNodeHome),
-		genutilcli.MigrateGenesisCmd(),
-		WrapGenTxCmd(encodingConfig.TxConfig, banktypes.GenesisBalancesIterator{}, app.DefaultNodeHome),
-		WrapValidateGenesisCmd(),
-		AddGenesisAccountCmd(app.DefaultNodeHome),
-		tmcli.NewCompletionCmd(rootCmd, true),
-		ethermintclient.NewTestnetCmd(app.ModuleBasics, banktypes.GenesisBalancesIterator{}),
+		cmtcli.NewCompletionCmd(rootCmd, true),
+		ethermintclient.NewTestnetCmd(basicManager, banktypes.GenesisBalancesIterator{}),
 		debug.Cmd(),
-		config.Cmd(),
-		pruning.PruningCmd(a.newApp),
-		snapshot.Cmd(a.newApp),
+		confixcmd.ConfigCommand(),
+		pruning.Cmd(newApp, app.DefaultNodeHome),
+		snapshot.Cmd(newApp),
 		// this line is used by starport scaffolding # stargate/root/commands
 	)
 
 	opts := ethermintserver.StartOptions{
-		AppCreator:      a.newApp,
+		AppCreator:      newApp,
 		DefaultNodeHome: app.DefaultNodeHome,
 		DBOpener:        opendb.OpenDB,
 	}
-	ethermintserver.AddCommands(rootCmd, opts, a.appExport, addModuleInitFlags)
+	ethermintserver.AddCommands(rootCmd, opts, appExport, addModuleInitFlags)
 
 	changeSetCmd := ChangeSetCmd()
 	if changeSetCmd != nil {
@@ -143,14 +187,30 @@ func initRootCmd(rootCmd *cobra.Command, encodingConfig params.EncodingConfig) {
 
 	// add keybase, auxiliary RPC, query, and tx child commands
 	rootCmd.AddCommand(
-		rpc.StatusCommand(),
+		server.StatusCommand(),
+		genesisCommand(encodingConfig.TxConfig, basicManager),
 		queryCommand(),
 		txCommand(),
 		ethermintclient.KeyCommands(app.DefaultNodeHome),
+		e2eecli.E2EECommand(),
 	)
 
+	rootCmd, err := srvflags.AddGlobalFlags(rootCmd)
+	if err != nil {
+		panic(err)
+	}
 	// add rosetta
-	rootCmd.AddCommand(server.RosettaCommand(encodingConfig.InterfaceRegistry, encodingConfig.Codec))
+	rootCmd.AddCommand(rosettaCmd.RosettaCommand(encodingConfig.InterfaceRegistry, encodingConfig.Codec))
+}
+
+// genesisCommand builds genesis-related `simd genesis` command. Users may provide application specific commands as a parameter
+func genesisCommand(txConfig client.TxConfig, basicManager module.BasicManager, cmds ...*cobra.Command) *cobra.Command {
+	cmd := genutilcli.Commands(txConfig, basicManager, app.DefaultNodeHome)
+
+	for _, subCmd := range cmds {
+		cmd.AddCommand(subCmd)
+	}
+	return cmd
 }
 
 func addModuleInitFlags(startCmd *cobra.Command) {
@@ -164,21 +224,20 @@ func queryCommand() *cobra.Command {
 		Use:                        "query",
 		Aliases:                    []string{"q"},
 		Short:                      "Querying subcommands",
-		DisableFlagParsing:         true,
+		DisableFlagParsing:         false,
 		SuggestionsMinimumDistance: 2,
 		RunE:                       client.ValidateCmd,
 	}
 
 	cmd.AddCommand(
-		authcmd.GetAccountCmd(),
-		rpc.ValidatorCommand(),
-		rpc.BlockCommand(),
+		rpc.QueryEventForTxCmd(),
+		server.QueryBlockCmd(),
 		authcmd.QueryTxsByEventsCmd(),
+		server.QueryBlocksCmd(),
 		authcmd.QueryTxCmd(),
+		server.QueryBlockResultsCmd(),
+		rpc.ValidatorCommand(),
 	)
-
-	app.ModuleBasics.AddQueryCommands(cmd)
-	cmd.PersistentFlags().String(flags.FlagChainID, "", "The network chain ID")
 
 	return cmd
 }
@@ -187,7 +246,7 @@ func txCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:                        "tx",
 		Short:                      "Transactions subcommands",
-		DisableFlagParsing:         true,
+		DisableFlagParsing:         false,
 		SuggestionsMinimumDistance: 2,
 		RunE:                       client.ValidateCmd,
 	}
@@ -196,16 +255,13 @@ func txCommand() *cobra.Command {
 		authcmd.GetSignCommand(),
 		authcmd.GetSignBatchCommand(),
 		authcmd.GetMultiSignCommand(),
+		authcmd.GetMultiSignBatchCmd(),
 		authcmd.GetValidateSignaturesCommand(),
-		flags.LineBreak,
 		authcmd.GetBroadcastCommand(),
 		authcmd.GetEncodeCommand(),
 		authcmd.GetDecodeCommand(),
-		flags.LineBreak,
+		authcmd.GetSimulateCmd(),
 	)
-
-	app.ModuleBasics.AddTxCommands(cmd)
-	cmd.PersistentFlags().String(flags.FlagChainID, "", "The network chain ID")
 
 	return cmd
 }
@@ -213,88 +269,78 @@ func txCommand() *cobra.Command {
 // initAppConfig helps to override default appConfig template and configs.
 // return "", nil if no custom configuration is required for the application.
 func initAppConfig() (string, interface{}) {
-	tpl, cfg := servercfg.AppConfig(ethermint.AttoPhoton)
-	return tpl + cronoscfg.DefaultConfigTemplate, cronoscfg.Config{
-		Config:  cfg.(servercfg.Config),
-		MemIAVL: cronoscfg.DefaultMemIAVLConfig(),
+	type CustomAppConfig struct {
+		servercfg.Config
+
+		MemIAVL   memiavlcfg.MemIAVLConfig `mapstructure:"memiavl"`
+		VersionDB VersionDBConfig          `mapstructure:"versiondb"`
 	}
+
+	tpl, cfg := servercfg.AppConfig("")
+
+	customAppConfig := CustomAppConfig{
+		Config:    cfg.(servercfg.Config),
+		MemIAVL:   memiavlcfg.DefaultMemIAVLConfig(),
+		VersionDB: DefaultVersionDBConfig(),
+	}
+
+	return tpl + memiavlcfg.DefaultConfigTemplate + DefaultVersionDBTemplate, customAppConfig
 }
 
-type appCreator struct {
-	encCfg params.EncodingConfig
-}
-
-// newApp is an AppCreator
-func (a appCreator) newApp(logger log.Logger, db dbm.DB, traceStore io.Writer, appOpts servertypes.AppOptions) servertypes.Application {
-	snapshotDir := filepath.Join(cast.ToString(appOpts.Get(flags.FlagHome)), "data", "snapshots")
-	if err := os.MkdirAll(snapshotDir, os.ModePerm); err != nil {
-		panic(err)
-	}
-
-	skipUpgradeHeights := make(map[int64]bool)
-	for _, h := range cast.ToIntSlice(appOpts.Get(server.FlagUnsafeSkipUpgrades)) {
-		skipUpgradeHeights[int64(h)] = true
-	}
-
+// newApp creates the application
+func newApp(
+	logger log.Logger,
+	db dbm.DB,
+	traceStore io.Writer,
+	appOpts servertypes.AppOptions,
+) servertypes.Application {
 	baseappOptions := server.DefaultBaseappOptions(appOpts)
 	return app.New(
-		logger, db, traceStore, true, false, skipUpgradeHeights,
-		cast.ToString(appOpts.Get(flags.FlagHome)),
-		cast.ToUint(appOpts.Get(server.FlagInvCheckPeriod)),
-		a.encCfg,
-		// this line is used by starport scaffolding # stargate/root/appArgument
+		logger, db, traceStore, true,
 		appOpts,
 		baseappOptions...,
 	)
 }
 
-// appExport creates a new simapp (optionally at a given height)
-func (a appCreator) appExport(
-	logger log.Logger, db dbm.DB, traceStore io.Writer, height int64, forZeroHeight bool, jailAllowedAddrs []string,
+// appExport creates a new app (optionally at a given height) and exports state.
+func appExport(
+	logger log.Logger,
+	db dbm.DB,
+	traceStore io.Writer,
+	height int64,
+	forZeroHeight bool,
+	jailAllowedAddrs []string,
 	appOpts servertypes.AppOptions,
+	modulesToExport []string,
 ) (servertypes.ExportedApp, error) {
-	var anApp *app.App
-
+	// this check is necessary as we use the flag in x/upgrade.
+	// we can exit more gracefully by checking the flag here.
 	homePath, ok := appOpts.Get(flags.FlagHome).(string)
 	if !ok || homePath == "" {
 		return servertypes.ExportedApp{}, errors.New("application home not set")
 	}
 
-	if height != -1 {
-		anApp = app.New(
-			logger,
-			db,
-			traceStore,
-			false,
-			false,
-			map[int64]bool{},
-			homePath,
-			uint(1),
-			a.encCfg,
-			// this line is used by starport scaffolding # stargate/root/exportArgument
-			appOpts,
-		)
+	viperAppOpts, ok := appOpts.(*viper.Viper)
+	if !ok {
+		return servertypes.ExportedApp{}, errors.New("appOpts is not viper.Viper")
+	}
 
-		if err := anApp.LoadHeight(height); err != nil {
+	// overwrite the FlagInvCheckPeriod
+	viperAppOpts.Set(server.FlagInvCheckPeriod, 1)
+	appOpts = viperAppOpts
+
+	var cronosApp *app.App
+	if height != -1 {
+		cronosApp = app.New(logger, db, traceStore, false, appOpts)
+
+		if err := cronosApp.LoadHeight(height); err != nil {
 			return servertypes.ExportedApp{}, err
 		}
 	} else {
-		anApp = app.New(
-			logger,
-			db,
-			traceStore,
-			true,
-			false,
-			map[int64]bool{},
-			homePath,
-			uint(1),
-			a.encCfg,
-			// this line is used by starport scaffolding # stargate/root/noHeightExportArgument
-			appOpts,
-		)
+		cronosApp = app.New(logger, db, traceStore, true, appOpts)
 	}
 
-	return anApp.ExportAppStateAndValidators(forZeroHeight, jailAllowedAddrs)
+	return cronosApp.ExportAppStateAndValidators(forZeroHeight, jailAllowedAddrs, modulesToExport)
 }
 
 func overwriteFlagDefaults(c *cobra.Command, defaults map[string]string) {
@@ -314,34 +360,4 @@ func overwriteFlagDefaults(c *cobra.Command, defaults map[string]string) {
 	for _, c := range c.Commands() {
 		overwriteFlagDefaults(c, defaults)
 	}
-}
-
-// WrapValidateGenesisCmd extends `genutilcli.ValidateGenesisCmd`.
-func WrapValidateGenesisCmd() *cobra.Command {
-	wrapCmd := genutilcli.ValidateGenesisCmd(module.NewBasicManager())
-	wrapCmd.RunE = func(cmd *cobra.Command, args []string) error {
-		moduleBasics := app.GenModuleBasics()
-		return genutilcli.ValidateGenesisCmd(moduleBasics).RunE(cmd, args)
-	}
-	return wrapCmd
-}
-
-// WrapInitCmd extends `genutilcli.InitCmd`.
-func WrapInitCmd(home string) *cobra.Command {
-	wrapCmd := genutilcli.InitCmd(module.NewBasicManager(), home)
-	wrapCmd.RunE = func(cmd *cobra.Command, args []string) error {
-		moduleBasics := app.GenModuleBasics()
-		return genutilcli.InitCmd(moduleBasics, home).RunE(cmd, args)
-	}
-	return wrapCmd
-}
-
-// WrapGenTxCmd extends `genutilcli.GenTxCmd`.
-func WrapGenTxCmd(txEncCfg client.TxEncodingConfig, genBalIterator banktypes.GenesisBalancesIterator, defaultNodeHome string) *cobra.Command {
-	wrapCmd := genutilcli.GenTxCmd(module.NewBasicManager(), txEncCfg, genBalIterator, defaultNodeHome)
-	wrapCmd.RunE = func(cmd *cobra.Command, args []string) error {
-		moduleBasics := app.GenModuleBasics()
-		return genutilcli.GenTxCmd(moduleBasics, txEncCfg, genBalIterator, defaultNodeHome).RunE(cmd, args)
-	}
-	return wrapCmd
 }

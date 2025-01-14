@@ -14,6 +14,8 @@ from .utils import (
     wait_for_new_blocks,
 )
 
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture(scope="module")
 def cronos_mempool(tmp_path_factory):
@@ -23,7 +25,7 @@ def cronos_mempool(tmp_path_factory):
     )
 
 
-@pytest.mark.flaky
+@pytest.mark.flaky(max_runs=5)
 def test_mempool(cronos_mempool):
     w3: Web3 = cronos_mempool.w3
     filter = w3.eth.filter("pending")
@@ -53,11 +55,13 @@ def test_mempool(cronos_mempool):
 
     to = ADDRS["community"]
     params = {"gasPrice": w3.eth.gas_price}
-    block_num_0, sended_hash_set = send_txs(w3, cli, to, KEYS.values(), params)
+    block_num_0, sended_hash_set = send_txs(
+        w3, cli, to, [v for k, v in KEYS.items() if k != "signer1"], params
+    )
     print(f"all send tx hash: {sended_hash_set} at {block_num_0}")
 
     all_pending = w3.eth.get_filter_changes(filter.filter_id)
-    assert len(all_pending) == 0
+    assert len(all_pending) == len(KEYS.items()) - 1
 
     block_num_1 = w3.eth.get_block_number()
     print(f"block_num_1 {block_num_1}")
@@ -65,10 +69,14 @@ def test_mempool(cronos_mempool):
     # check after max 10 blocks
     for i in range(10):
         all_pending = w3.eth.get_filter_changes(filter.filter_id)
-        print(f"all pending tx hash at block {i+block_num_1}: {all_pending}")
-        for h in all_pending:
-            sended_hash_set.discard(h)
-        if len(sended_hash_set) == 0:
+        if len(all_pending) == 0:
             break
         wait_for_new_blocks(cli, 1, sleep=0.1)
-    assert len(sended_hash_set) == 0
+    assert len(all_pending) == 0
+
+
+def test_blocked_address(cronos_mempool):
+    cli = cronos_mempool.cosmos_cli(0)
+    rsp = cli.transfer("signer1", cli.address("validator"), "1basecro")
+    assert rsp["code"] != 0
+    assert "signer is blocked" in rsp["raw_log"]

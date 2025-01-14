@@ -1,10 +1,13 @@
-import configparser
 import json
-import re
+import shutil
+import stat
 import subprocess
+from contextlib import contextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+import requests
 from pystarport import ports
 from pystarport.cluster import SUPERVISOR_CONFIG_FILE
 
@@ -13,11 +16,32 @@ from .utils import (
     ADDRS,
     CONTRACTS,
     approve_proposal,
+    assert_gov_params,
     deploy_contract,
+    edit_ini_sections,
+    get_consensus_params,
+    get_send_enable,
     send_transaction,
     wait_for_block,
+    wait_for_new_blocks,
     wait_for_port,
 )
+
+pytestmark = pytest.mark.upgrade
+
+
+@pytest.fixture(scope="module")
+def custom_cronos(tmp_path_factory):
+    yield from setup_cronos_test(tmp_path_factory)
+
+
+def get_txs(base_port, end):
+    port = ports.rpc_port(base_port)
+    res = []
+    for h in range(1, end):
+        url = f"http://127.0.0.1:{port}/block_results?height={h}"
+        res.append(requests.get(url).json().get("result")["txs_results"])
+    return res
 
 
 def init_cosmovisor(home):
@@ -35,63 +59,169 @@ def post_init(path, base_port, config):
     prepare cosmovisor for each node
     """
     chain_id = "cronos_777-1"
-    cfg = json.loads((path / chain_id / "config.json").read_text())
+    data = path / chain_id
+    cfg = json.loads((data / "config.json").read_text())
     for i, _ in enumerate(cfg["validators"]):
-        home = path / chain_id / f"node{i}"
+        home = data / f"node{i}"
         init_cosmovisor(home)
 
-    # patch supervisord ini config
-    ini_path = path / chain_id / SUPERVISOR_CONFIG_FILE
-    ini = configparser.RawConfigParser()
-    ini.read(ini_path)
-    reg = re.compile(rf"^program:{chain_id}-node(\d+)")
-    for section in ini.sections():
-        m = reg.match(section)
-        if m:
-            i = m.group(1)
-            ini[section].update(
-                {
-                    "command": f"cosmovisor start --home %(here)s/node{i}",
-                    "environment": f"DAEMON_NAME=cronosd,DAEMON_HOME=%(here)s/node{i}",
-                }
-            )
-    with ini_path.open("w") as fp:
-        ini.write(fp)
-
-
-@pytest.fixture(scope="module")
-def custom_cronos(tmp_path_factory):
-    path = tmp_path_factory.mktemp("upgrade")
-    cmd = [
-        "nix-build",
-        Path(__file__).parent / "configs/upgrade-test-package.nix",
-        "-o",
-        path / "upgrades",
-    ]
-    print(*cmd)
-    subprocess.run(cmd, check=True)
-    # init with genesis binary
-    yield from setup_custom_cronos(
-        path,
-        26100,
-        Path(__file__).parent / "configs/cosmovisor.jsonnet",
-        post_init=post_init,
-        chain_binary=str(path / "upgrades/genesis/bin/cronosd"),
+    edit_ini_sections(
+        chain_id,
+        data / SUPERVISOR_CONFIG_FILE,
+        lambda i, _: {
+            "command": f"cosmovisor run start --home %(here)s/node{i}",
+            "environment": (
+                "DAEMON_NAME=cronosd,"
+                "DAEMON_SHUTDOWN_GRACE=1m,"
+                "UNSAFE_SKIP_BACKUP=true,"
+                f"DAEMON_HOME=%(here)s/node{i}"
+            ),
+        },
     )
 
 
-def test_cosmovisor_upgrade(custom_cronos: Cronos):
+def setup_cronos_test(tmp_path_factory):
+    path = tmp_path_factory.mktemp("upgrade")
+    port = 26200
+    nix_name = "upgrade-test-package"
+    cfg_name = "cosmovisor"
+    configdir = Path(__file__).parent
+    cmd = [
+        "nix-build",
+        configdir / f"configs/{nix_name}.nix",
+    ]
+    print(*cmd)
+    subprocess.run(cmd, check=True)
+
+    # copy the content so the new directory is writable.
+    upgrades = path / "upgrades"
+    shutil.copytree("./result", upgrades)
+    mod = stat.S_IRWXU
+    upgrades.chmod(mod)
+    for d in upgrades.iterdir():
+        d.chmod(mod)
+
+    # init with genesis binary
+    with contextmanager(setup_custom_cronos)(
+        path,
+        port,
+        configdir / f"configs/{cfg_name}.jsonnet",
+        post_init=post_init,
+        chain_binary=str(upgrades / "genesis/bin/cronosd"),
+    ) as cronos:
+        yield cronos
+
+
+def assert_evm_params(cli, expected, height):
+    params = cli.query_params("evm", height=height)
+    del params["header_hash_num"]
+    assert expected == params
+
+
+def check_basic_tx(c):
+    # check basic tx works
+    wait_for_port(ports.evmrpc_port(c.base_port(0)))
+    receipt = send_transaction(
+        c.w3,
+        {
+            "to": ADDRS["community"],
+            "value": 1000,
+            "maxFeePerGas": 10000000000000,
+            "maxPriorityFeePerGas": 10000,
+        },
+    )
+    assert receipt.status == 1
+
+
+def exec(c, tmp_path_factory):
     """
     - propose an upgrade and pass it
     - wait for it to happen
     - it should work transparently
     """
-    cli = custom_cronos.cosmos_cli()
-    height = cli.block_height()
-    target_height = height + 15
-    print("upgrade height", target_height)
+    cli = c.cosmos_cli()
+    base_port = c.base_port(0)
+    port = ports.api_port(base_port)
+    send_enable = [
+        {"denom": "basetcro", "enabled": False},
+        {"denom": "stake", "enabled": True},
+    ]
+    p = get_send_enable(port)
+    assert sorted(p, key=lambda x: x["denom"]) == send_enable
 
-    w3 = custom_cronos.w3
+    # export genesis from old version
+    c.supervisorctl("stop", "all")
+    migrate = tmp_path_factory.mktemp("migrate")
+    file_path0 = Path(migrate / "old.json")
+    with open(file_path0, "w") as fp:
+        json.dump(json.loads(cli.export()), fp)
+        fp.flush()
+
+    c.supervisorctl(
+        "start", "cronos_777-1-node0", "cronos_777-1-node1", "cronos_777-1-node2"
+    )
+    wait_for_port(ports.evmrpc_port(base_port))
+    wait_for_new_blocks(cli, 1)
+
+    def do_upgrade(plan_name, target, mode=None):
+        print(f"upgrade {plan_name} height: {target}")
+        if plan_name == "v1.4.0-rc5-testnet":
+            rsp = cli.software_upgrade(
+                "community",
+                {
+                    "name": plan_name,
+                    "title": "upgrade test",
+                    "note": "ditto",
+                    "upgrade-height": target,
+                    "summary": "summary",
+                    "deposit": "10000basetcro",
+                },
+            )
+            assert rsp["code"] == 0, rsp["raw_log"]
+            approve_proposal(c, rsp["events"])
+        else:
+            rsp = cli.gov_propose_legacy(
+                "community",
+                "software-upgrade",
+                {
+                    "name": plan_name,
+                    "title": "upgrade test",
+                    "description": "ditto",
+                    "upgrade-height": target,
+                    "deposit": "10000basetcro",
+                },
+                mode=mode,
+            )
+            assert rsp["code"] == 0, rsp["raw_log"]
+            approve_proposal(c, rsp["logs"][0]["events"])
+
+        # update cli chain binary
+        c.chain_binary = (
+            Path(c.chain_binary).parent.parent.parent / f"{plan_name}/bin/cronosd"
+        )
+        # block should pass the target height
+        wait_for_block(c.cosmos_cli(), target + 2, timeout=480)
+        wait_for_port(ports.rpc_port(base_port))
+        return c.cosmos_cli()
+
+    # test migrate keystore
+    cli.migrate_keystore()
+    height = cli.block_height()
+    target_height0 = height + 15
+    cli = do_upgrade("v1.1.0", target_height0, "block")
+    check_basic_tx(c)
+
+    height = cli.block_height()
+    target_height1 = height + 15
+
+    w3 = c.w3
+    random_contract = deploy_contract(
+        w3,
+        CONTRACTS["Random"],
+    )
+    with pytest.raises(ValueError) as e_info:
+        random_contract.caller.randomTokenId()
+    assert "invalid memory address or nil pointer dereference" in str(e_info.value)
     contract = deploy_contract(w3, CONTRACTS["TestERC20A"])
     old_height = w3.eth.block_number
     old_balance = w3.eth.get_balance(ADDRS["validator"], block_identifier=old_height)
@@ -101,47 +231,14 @@ def test_cosmovisor_upgrade(custom_cronos: Cronos):
     )
     print("old values", old_height, old_balance, old_base_fee)
 
-    plan_name = "v2.0.0-testnet3"
-    rsp = cli.gov_propose_legacy(
-        "community",
-        "software-upgrade",
-        {
-            "name": plan_name,
-            "title": "upgrade test",
-            "description": "ditto",
-            "upgrade-height": target_height,
-            "deposit": "10000basetcro",
-        },
-    )
-    assert rsp["code"] == 0, rsp["raw_log"]
-    approve_proposal(custom_cronos, rsp)
+    cli = do_upgrade("v1.2", target_height1)
+    check_basic_tx(c)
 
-    # update cli chain binary
-    custom_cronos.chain_binary = (
-        Path(custom_cronos.chain_binary).parent.parent.parent
-        / f"{plan_name}/bin/cronosd"
-    )
-    cli = custom_cronos.cosmos_cli()
-
-    # block should pass the target height
-    wait_for_block(cli, target_height + 2, timeout=480)
-    wait_for_port(ports.rpc_port(custom_cronos.base_port(0)))
-
-    # test migrate keystore
-    cli.migrate_keystore()
-
-    # check basic tx works
-    wait_for_port(ports.evmrpc_port(custom_cronos.base_port(0)))
-    receipt = send_transaction(
-        custom_cronos.w3,
-        {
-            "to": ADDRS["community"],
-            "value": 1000,
-            "maxFeePerGas": 1000000000000,
-            "maxPriorityFeePerGas": 10000,
-        },
-    )
-    assert receipt.status == 1
+    # deploy contract should still work
+    deploy_contract(w3, CONTRACTS["Greeter"])
+    # random should work
+    res = random_contract.caller.randomTokenId()
+    assert res > 0, res
 
     # query json-rpc on older blocks should success
     assert old_balance == w3.eth.get_balance(
@@ -153,28 +250,61 @@ def test_cosmovisor_upgrade(custom_cronos: Cronos):
     assert old_erc20_balance == contract.caller(block_identifier=old_height).balanceOf(
         ADDRS["validator"]
     )
+    # check consensus params
+    port = ports.rpc_port(base_port)
+    res = get_consensus_params(port, w3.eth.get_block_number())
+    assert res["block"]["max_gas"] == "60000000"
 
-    # check gravity params
-    assert cli.query_gravity_params() == {
-        "params": {
-            "gravity_id": "cronos_gravity_testnet",
-            "contract_source_hash": "",
-            "bridge_ethereum_address": "0x0000000000000000000000000000000000000000",
-            "bridge_chain_id": "0",
-            "signed_signer_set_txs_window": "10000",
-            "signed_batches_window": "10000",
-            "ethereum_signatures_window": "10000",
-            "target_eth_tx_timeout": "43200000",
-            "average_block_time": "5000",
-            "average_ethereum_block_time": "15000",
-            "slash_fraction_signer_set_tx": "0.001000000000000000",
-            "slash_fraction_batch": "0.001000000000000000",
-            "slash_fraction_ethereum_signature": "0.001000000000000000",
-            "slash_fraction_conflicting_ethereum_signature": "0.001000000000000000",
-            "unbond_slashing_signer_set_txs_window": "10000",
-            "bridge_active": False,
-            "batch_creation_period": "10",
-            "batch_max_element": "100",
-            "observe_ethereum_height_period": "50",
-        }
-    }
+    # check bank send enable
+    p = cli.query_bank_send()
+    assert sorted(p, key=lambda x: x["denom"]) == send_enable
+
+    rsp = cli.query_params("icaauth")
+    assert rsp["min_timeout_duration"] == "3600s", rsp
+    max_callback_gas = cli.query_params()["max_callback_gas"]
+    assert max_callback_gas == "50000", max_callback_gas
+
+    e0 = cli.query_params("evm", height=target_height0 - 1)
+    e1 = cli.query_params("evm", height=target_height1 - 1)
+    f0 = cli.query_params("feemarket", height=target_height0 - 1)
+    f1 = cli.query_params("feemarket", height=target_height1 - 1)
+    assert e0["evm_denom"] == e1["evm_denom"] == "basetcro"
+
+    # update the genesis time = current time + 5 secs
+    newtime = datetime.utcnow() + timedelta(seconds=5)
+    newtime = newtime.replace(tzinfo=None).isoformat("T") + "Z"
+    config = c.config
+    config["genesis-time"] = newtime
+    for i, _ in enumerate(config["validators"]):
+        genesis = json.load(open(file_path0))
+        genesis["genesis_time"] = config.get("genesis-time")
+        file = c.cosmos_cli(i).data_dir / "config/genesis.json"
+        file.write_text(json.dumps(genesis))
+    c.supervisorctl(
+        "start", "cronos_777-1-node0", "cronos_777-1-node1", "cronos_777-1-node2"
+    )
+    wait_for_new_blocks(c.cosmos_cli(), 1)
+
+    height = cli.block_height()
+    txs = get_txs(base_port, height)
+    cli = do_upgrade("v1.3", height + 15)
+    assert txs == get_txs(base_port, height)
+
+    gov_param = cli.query_params("gov")
+    cli = do_upgrade("v1.4", cli.block_height() + 15)
+
+    assert_evm_params(cli, e0, target_height0 - 1)
+    assert_evm_params(cli, e1, target_height1 - 1)
+    assert f0 == cli.query_params("feemarket", height=target_height0 - 1)
+    assert f1 == cli.query_params("feemarket", height=target_height1 - 1)
+    assert cli.query_params("evm")["header_hash_num"] == "256", p
+    with pytest.raises(AssertionError):
+        cli.query_params("icaauth")
+    assert_gov_params(cli, gov_param)
+
+    cli = do_upgrade("v1.4.0-rc5-testnet", cli.block_height() + 15)
+    check_basic_tx(c)
+
+
+def test_cosmovisor_upgrade(custom_cronos: Cronos, tmp_path_factory):
+    exec(custom_cronos, tmp_path_factory)

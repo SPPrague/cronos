@@ -16,20 +16,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, macos-14]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v3
-      - uses: cachix/install-nix-action@v19
+      - uses: cachix/install-nix-action@v23
         with:
-          # pin to nix-2.13 to workaround compability issue of 2.14,
-          # see: https://github.com/cachix/install-nix-action/issues/161
-          install_url: https://releases.nixos.org/nix/nix-2.13.3/install
           nix_path: nixpkgs=channel:nixos-22.11
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
       - id: changed-files
-        uses: tj-actions/changed-files@v35
+        uses: tj-actions/changed-files@v41
         with:
           files: |
             **/*.go
@@ -53,41 +50,31 @@ jobs:
 
   unittest:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v3
-      - uses: cachix/install-nix-action@v19
+      - uses: cachix/install-nix-action@v23
         with:
-          # pin to nix-2.13 to workaround compability issue of 2.14,
-          # see: https://github.com/cachix/install-nix-action/issues/161
-          install_url: https://releases.nixos.org/nix/nix-2.13.3/install
           nix_path: nixpkgs=channel:nixos-22.11
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/setup-go@v3
-        with:
-          go-version: '^1.20.0'
       - id: changed-files
-        uses: tj-actions/changed-files@v35
+        uses: tj-actions/changed-files@v41
         with:
           files: |
             **/*.go
             *.mod
             *.sum
+      - uses: cachix/cachix-action@v12
+        if: steps.changed-files.outputs.any_changed == 'true'
+        with:
+          name: cronos
+          # github don't pass secrets for pull request from fork repos,
+          # in that case the push is disabled naturally.
+          signingKey: "${{ secrets.CACHIX_SIGNING_KEY }}"
       - name: test & coverage report creation
         run: |
-          make test
-
-          # run versiondb tests
-          nix profile install nixpkgs#rocksdb
-          export PKG_CONFIG_PATH=$HOME/.nix-profile/lib/pkgconfig
-          export CGO_CFLAGS="$(pkg-config --cflags rocksdb)" CGO_LDFLAGS="$(pkg-config --libs rocksdb)"
-          export LD_LIBRARY_PATH=$HOME/.nix-profile/lib
-          export GLIBC="$(nix build nixpkgs#stdenv.cc.libc.out --no-link --print-out-paths)"
-          export CGO_LDFLAGS="$CGO_LDFLAGS -Wl,--dynamic-linker=$GLIBC/lib/ld-linux-x86-64.so.2"
-          echo $CGO_LDFLAGS
-          cd ./versiondb
-          go test -v -mod=readonly ./... -tags rocksdb,grocksdb_clean_link -coverprofile=coverage.txt
+          nix develop .#rocksdb -c make test test-versiondb
         if: steps.changed-files.outputs.any_changed == 'true'
       - name: filter out proto files
         run: |
@@ -98,11 +85,10 @@ jobs:
             sed -i.bak "/$(echo $filename | sed 's/\//\\\//g')/d" coverage.txt
           done
         if: steps.changed-files.outputs.any_changed == 'true'
-      - uses: codecov/codecov-action@v3
+      - uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./coverage.txt,./memiavl/coverage.txt,./versiondb/coverage.txt
-          fail_ci_if_error: true
+          files: ./coverage.txt,./memiavl/coverage.txt,./store/coverage.txt,./versiondb/coverage.txt
         if: steps.changed-files.outputs.any_changed == 'true'
 
   gomod2nix:
@@ -112,22 +98,19 @@ jobs:
         with:
           fetch-depth: 0
       - id: changed-files
-        uses: tj-actions/changed-files@v35
+        uses: tj-actions/changed-files@v41
         with:
           files: |
             go.mod
             go.sum
-      - uses: cachix/install-nix-action@v19
+      - uses: cachix/install-nix-action@v23
         with:
-          # pin to nix-2.13 to workaround compability issue of 2.14,
-          # see: https://github.com/cachix/install-nix-action/issues/161
-          install_url: https://releases.nixos.org/nix/nix-2.13.3/install
           nix_path: nixpkgs=channel:nixos-22.11
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
         if: steps.changed-files.outputs.any_changed == 'true'
       - name: gomod2nix
-        run: nix run -f ./nix gomod2nix
+        run: nix develop -c gomod2nix
         if: steps.changed-files.outputs.any_changed == 'true'
       - name: check working directory is clean
         id: changes
@@ -150,15 +133,12 @@ jobs:
         with:
           fetch-depth: 0
       - id: changed-files
-        uses: tj-actions/changed-files@v35
+        uses: tj-actions/changed-files@v41
         with:
           files: |
             contracts
-      - uses: cachix/install-nix-action@v19
+      - uses: cachix/install-nix-action@v23
         with:
-          # pin to nix-2.13 to workaround compability issue of 2.14,
-          # see: https://github.com/cachix/install-nix-action/issues/161
-          install_url: https://releases.nixos.org/nix/nix-2.13.3/install
           nix_path: nixpkgs=channel:nixos-22.11
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}

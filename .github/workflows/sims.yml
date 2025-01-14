@@ -110,7 +110,7 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'pull_request' 
       - uses: actions/setup-go@v3
         with:
-          go-version: '^1.20.0'
+          go-version: '^1.22.0'
       - name: Display go version
         run: go version
       - run: make build
@@ -131,7 +131,7 @@ jobs:
     steps:
       - uses: actions/setup-go@v3
         with:
-          go-version: '^1.20.0'
+          go-version: '^1.22.0'
       - name: Display go version
         run: go version
       - name: Install runsim
@@ -153,11 +153,12 @@ jobs:
 
   test-sim-nondeterminism:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     needs: [build, install-runsim]
     steps:
       - uses: actions/setup-go@v3
         with:
-          go-version: '^1.20.0'
+          go-version: '^1.22.0'
       - name: Checkout Comment PR Branch
         uses: actions/checkout@v3
         if: github.event_name == 'issue_comment'
@@ -208,11 +209,12 @@ jobs:
 
   test-sim-import-export:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     needs: [build, install-runsim]
     steps:
       - uses: actions/setup-go@v3
         with:
-          go-version: '^1.20.0'
+          go-version: '^1.22.0'
       - name: Checkout Comment PR Branch
         uses: actions/checkout@v3
         if: github.event_name == 'issue_comment'
@@ -263,11 +265,12 @@ jobs:
 
   test-sim-after-import:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     needs: [build, install-runsim]
     steps:
       - uses: actions/setup-go@v3
         with:
-          go-version: '^1.20.0'
+          go-version: '^1.22.0'
       - name: Checkout Comment PR Branch
         uses: actions/checkout@v3
         if: github.event_name == 'issue_comment'
@@ -318,11 +321,12 @@ jobs:
 
   test-sim-multi-seed-short:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     needs: [build, install-runsim]
     steps:
       - uses: actions/setup-go@v3
         with:
-          go-version: '^1.20.0'
+          go-version: '^1.22.0'
       - name: Checkout Comment PR Branch
         uses: actions/checkout@v3
         if: github.event_name == 'issue_comment'
@@ -379,32 +383,32 @@ jobs:
     if: always() && github.event_name == 'issue_comment' && needs.member.outputs.valid == 'true'
     steps: 
       - name: Download artifact pass_status_build
-        uses: actions/download-artifact@v1
+        uses: actions/download-artifact@v4.1.7
         continue-on-error: true
         with:
           name: pass_status_build
       - name: Download artifact pass_status_install
-        uses: actions/download-artifact@v1
+        uses: actions/download-artifact@v4.1.7
         continue-on-error: true
         with:
           name: pass_status_install
       - name: Download artifact pass_status_sim1
-        uses: actions/download-artifact@v1
+        uses: actions/download-artifact@v4.1.7
         continue-on-error: true
         with:
           name: pass_status_sim1
       - name: Download artifact pass_status_sim2
-        uses: actions/download-artifact@v1
+        uses: actions/download-artifact@v4.1.7
         continue-on-error: true
         with:
           name: pass_status_sim2
       - name: Download artifact pass_status_sim3
-        uses: actions/download-artifact@v1
+        uses: actions/download-artifact@v4.1.7
         continue-on-error: true
         with:
           name: pass_status_sim3
       - name: Download artifact pass_status_sim4
-        uses: actions/download-artifact@v1
+        uses: actions/download-artifact@v4.1.7
         continue-on-error: true
         with:
           name: pass_status_sim4

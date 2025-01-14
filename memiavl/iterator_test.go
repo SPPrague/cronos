@@ -3,8 +3,8 @@ package memiavl
 import (
 	"testing"
 
+	dbm "github.com/cosmos/cosmos-db"
 	"github.com/stretchr/testify/require"
-	dbm "github.com/tendermint/tm-db"
 )
 
 func TestIterator(t *testing.T) {
@@ -12,7 +12,8 @@ func TestIterator(t *testing.T) {
 	require.Equal(t, ExpectItems[0], collectIter(tree.Iterator(nil, nil, true)))
 
 	for _, changes := range ChangeSets {
-		_, v, err := tree.ApplyChangeSet(changes, true)
+		tree.ApplyChangeSet(changes)
+		_, v, err := tree.SaveVersion(true)
 		require.NoError(t, err)
 		require.Equal(t, ExpectItems[v], collectIter(tree.Iterator(nil, nil, true)))
 		require.Equal(t, reverse(ExpectItems[v]), collectIter(tree.Iterator(nil, nil, false)))
@@ -22,7 +23,8 @@ func TestIterator(t *testing.T) {
 func TestIteratorRange(t *testing.T) {
 	tree := New(0)
 	for _, changes := range ChangeSets[:6] {
-		_, _, err := tree.ApplyChangeSet(changes, true)
+		tree.ApplyChangeSet(changes)
+		_, _, err := tree.SaveVersion(true)
 		require.NoError(t, err)
 	}
 

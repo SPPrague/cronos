@@ -1,9 +1,9 @@
 package client
 
 import (
+	dbm "github.com/cosmos/cosmos-db"
 	"github.com/linxGnu/grocksdb"
 	"github.com/spf13/cobra"
-	dbm "github.com/tendermint/tm-db"
 )
 
 // Options defines the customizable settings of ChangeSetGroupCmd
@@ -27,6 +27,8 @@ func ChangeSetGroupCmd(opts Options) *cobra.Command {
 		IngestVersionDBSSTCmd(),
 		ChangeSetToVersionDBCmd(),
 		RestoreAppDBCmd(opts),
+		RestoreVersionDBCmd(),
+		FixDataCmd(opts.DefaultStores),
 	)
 	return cmd
 }

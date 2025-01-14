@@ -1,6 +1,11 @@
 package client
 
 const (
+	IAVLV0 = iota
+	IAVLV1
+)
+
+const (
 	flagStartVersion     = "start-version"
 	flagEndVersion       = "end-version"
 	flagOutput           = "output"
@@ -17,8 +22,9 @@ const (
 	flagMaximumVersion   = "maximum-version"
 	flagTargetVersion    = "target-version"
 	flagSaveSnapshot     = "save-snapshot"
-	flagBuildHashIndex   = "build-hash-index"
 	flagLoadSnapshot     = "load-snapshot"
 	flagSorterChunkSize  = "sorter-chunk-size"
 	flagInitialVersion   = "initial-version"
+	flagSDK64Compact     = "sdk64-compact"
+	flagIAVLVersion      = "iavl-version"
 )

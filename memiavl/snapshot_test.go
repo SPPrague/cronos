@@ -1,12 +1,8 @@
 package memiavl
 
 import (
-	"io"
 	"testing"
 
-	"github.com/cosmos/iavl"
-	protoio "github.com/gogo/protobuf/io"
-	proto "github.com/gogo/protobuf/proto"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,12 +10,13 @@ func TestSnapshotEncodingRoundTrip(t *testing.T) {
 	// setup test tree
 	tree := New(0)
 	for _, changes := range ChangeSets[:len(ChangeSets)-1] {
-		_, _, err := tree.ApplyChangeSet(changes, true)
+		tree.ApplyChangeSet(changes)
+		_, _, err := tree.SaveVersion(true)
 		require.NoError(t, err)
 	}
 
 	snapshotDir := t.TempDir()
-	require.NoError(t, tree.WriteSnapshot(snapshotDir, true))
+	require.NoError(t, tree.WriteSnapshot(snapshotDir))
 
 	snapshot, err := OpenSnapshot(snapshotDir)
 	require.NoError(t, err)
@@ -41,7 +38,8 @@ func TestSnapshotEncodingRoundTrip(t *testing.T) {
 	snapshot, err = OpenSnapshot(snapshotDir)
 	require.NoError(t, err)
 	tree3 := NewFromSnapshot(snapshot, true, 0)
-	hash, v, err := tree3.ApplyChangeSet(ChangeSets[len(ChangeSets)-1], true)
+	tree3.ApplyChangeSet(ChangeSets[len(ChangeSets)-1])
+	hash, v, err := tree3.SaveVersion(true)
 	require.NoError(t, err)
 	require.Equal(t, RefHashes[len(ChangeSets)-1], hash)
 	require.Equal(t, len(ChangeSets), int(v))
@@ -49,7 +47,7 @@ func TestSnapshotEncodingRoundTrip(t *testing.T) {
 }
 
 func TestSnapshotExport(t *testing.T) {
-	expNodes := []*iavl.ExportNode{
+	expNodes := []*ExportNode{
 		{Key: []byte("hello"), Value: []byte("world1"), Version: 2, Height: 0},
 		{Key: []byte("hello1"), Value: []byte("world1"), Version: 2, Height: 0},
 		{Key: []byte("hello1"), Value: nil, Version: 3, Height: 1},
@@ -62,21 +60,22 @@ func TestSnapshotExport(t *testing.T) {
 	// setup test tree
 	tree := New(0)
 	for _, changes := range ChangeSets[:3] {
-		_, _, err := tree.ApplyChangeSet(changes, true)
+		tree.ApplyChangeSet(changes)
+		_, _, err := tree.SaveVersion(true)
 		require.NoError(t, err)
 	}
 
 	snapshotDir := t.TempDir()
-	require.NoError(t, tree.WriteSnapshot(snapshotDir, true))
+	require.NoError(t, tree.WriteSnapshot(snapshotDir))
 
 	snapshot, err := OpenSnapshot(snapshotDir)
 	require.NoError(t, err)
 
-	var nodes []*iavl.ExportNode
+	var nodes []*ExportNode
 	exporter := snapshot.Export()
 	for {
 		node, err := exporter.Next()
-		if err == iavl.ExportDone {
+		if err == ErrorExportDone {
 			break
 		}
 		require.NoError(t, err)
@@ -90,16 +89,17 @@ func TestSnapshotImportExport(t *testing.T) {
 	// setup test tree
 	tree := New(0)
 	for _, changes := range ChangeSets {
-		_, _, err := tree.ApplyChangeSet(changes, true)
+		tree.ApplyChangeSet(changes)
+		_, _, err := tree.SaveVersion(true)
 		require.NoError(t, err)
 	}
 
 	snapshotDir := t.TempDir()
-	require.NoError(t, tree.WriteSnapshot(snapshotDir, true))
+	require.NoError(t, tree.WriteSnapshot(snapshotDir))
 	snapshot, err := OpenSnapshot(snapshotDir)
 	require.NoError(t, err)
 
-	ch := make(chan *iavl.ExportNode)
+	ch := make(chan *ExportNode)
 
 	go func() {
 		defer close(ch)
@@ -107,7 +107,7 @@ func TestSnapshotImportExport(t *testing.T) {
 		exporter := snapshot.Export()
 		for {
 			node, err := exporter.Next()
-			if err == iavl.ExportDone {
+			if err == ErrorExportDone {
 				break
 			}
 			require.NoError(t, err)
@@ -116,7 +116,7 @@ func TestSnapshotImportExport(t *testing.T) {
 	}()
 
 	snapshotDir2 := t.TempDir()
-	err = doImport(snapshotDir2, tree.Version(), ch, true)
+	err = doImport(snapshotDir2, tree.Version(), ch)
 	require.NoError(t, err)
 
 	snapshot2, err := OpenSnapshot(snapshotDir2)
@@ -133,7 +133,7 @@ func TestSnapshotImportExport(t *testing.T) {
 func TestDBSnapshotRestore(t *testing.T) {
 	db, err := Load(t.TempDir(), Options{
 		CreateIfMissing:   true,
-		InitialStores:     []string{"test"},
+		InitialStores:     []string{"test", "test2"},
 		AsyncCommitBuffer: -1,
 	})
 	require.NoError(t, err)
@@ -144,8 +144,13 @@ func TestDBSnapshotRestore(t *testing.T) {
 				Name:      "test",
 				Changeset: changes,
 			},
+			{
+				Name:      "test2",
+				Changeset: changes,
+			},
 		}
-		_, _, err := db.Commit(cs)
+		require.NoError(t, db.ApplyChangeSets(cs))
+		_, err := db.Commit()
 		require.NoError(t, err)
 
 		testSnapshotRoundTrip(t, db)
@@ -158,54 +163,31 @@ func TestDBSnapshotRestore(t *testing.T) {
 }
 
 func testSnapshotRoundTrip(t *testing.T, db *DB) {
-	reader, writer := makeProtoIOPair()
-	go func() {
-		defer writer.Close()
-		require.NoError(t, db.Snapshot(uint64(db.Version()), writer))
-	}()
+	exporter, err := NewMultiTreeExporter(db.dir, uint32(db.Version()), true)
+	require.NoError(t, err)
 
 	restoreDir := t.TempDir()
-	_, err := Import(restoreDir, uint64(db.Version()), 0, reader)
+	importer, err := NewMultiTreeImporter(restoreDir, uint64(db.Version()))
 	require.NoError(t, err)
+
+	for {
+		item, err := exporter.Next()
+		if err == ErrorExportDone {
+			break
+		}
+		require.NoError(t, err)
+		require.NoError(t, importer.Add(item))
+	}
+
+	require.NoError(t, importer.Finalize())
+	require.NoError(t, importer.Close())
+	require.NoError(t, exporter.Close())
 
 	db2, err := Load(restoreDir, Options{})
 	require.NoError(t, err)
 	require.Equal(t, db.LastCommitInfo(), db2.LastCommitInfo())
-	require.Equal(t, db.Hash(), db2.Hash())
 
 	// the imported db function normally
-	_, _, err = db2.Commit(nil)
+	_, err = db2.Commit()
 	require.NoError(t, err)
-}
-
-type protoReader struct {
-	ch chan proto.Message
-}
-
-func (r *protoReader) ReadMsg(msg proto.Message) error {
-	m, ok := <-r.ch
-	if !ok {
-		return io.EOF
-	}
-	proto.Merge(msg, m)
-	return nil
-}
-
-type protoWriter struct {
-	ch chan proto.Message
-}
-
-func (w *protoWriter) WriteMsg(msg proto.Message) error {
-	w.ch <- msg
-	return nil
-}
-
-func (w *protoWriter) Close() error {
-	close(w.ch)
-	return nil
-}
-
-func makeProtoIOPair() (protoio.Reader, protoio.WriteCloser) {
-	ch := make(chan proto.Message)
-	return &protoReader{ch}, &protoWriter{ch}
 }

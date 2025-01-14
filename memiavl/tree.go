@@ -3,28 +3,30 @@ package memiavl
 import (
 	"bytes"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"math"
 
-	"github.com/cosmos/iavl"
 	"github.com/cosmos/iavl/cache"
-	dbm "github.com/tendermint/tm-db"
 )
 
 var emptyHash = sha256.New().Sum(nil)
 
+func NewCache(cacheSize int) cache.Cache {
+	if cacheSize == 0 {
+		return nil
+	}
+	return cache.New(cacheSize)
+}
+
 // verify change sets by replay them to rebuild iavl tree and verify the root hashes
 type Tree struct {
-	version uint32
+	version, cowVersion uint32
 	// root node of empty tree is represented as `nil`
 	root     Node
 	snapshot *Snapshot
 
 	// simple lru cache provided by iavl library
 	cache cache.Cache
-
-	initialVersion, cowVersion uint32
 
 	// when true, the get and iterator methods could return a slice pointing to mmaped blob files.
 	zeroCopy bool
@@ -39,29 +41,31 @@ func (n *cacheNode) GetKey() []byte {
 }
 
 // NewEmptyTree creates an empty tree at an arbitrary version.
-func NewEmptyTree(version uint64, initialVersion uint32, cacheSize int) *Tree {
+func NewEmptyTree(version uint64, cacheSize int) *Tree {
 	if version >= math.MaxUint32 {
 		panic("version overflows uint32")
 	}
 
 	return &Tree{
-		version:        uint32(version),
-		initialVersion: initialVersion,
+		version: uint32(version),
 		// no need to copy if the tree is not backed by snapshot
 		zeroCopy: true,
-		cache:    cache.New(cacheSize),
+		cache:    NewCache(cacheSize),
 	}
 }
 
 // New creates an empty tree at genesis version
 func New(cacheSize int) *Tree {
-	return NewEmptyTree(0, 0, cacheSize)
+	return NewEmptyTree(0, cacheSize)
 }
 
 // New creates a empty tree with initial-version,
 // it happens when a new store created at the middle of the chain.
 func NewWithInitialVersion(initialVersion uint32, cacheSize int) *Tree {
-	return NewEmptyTree(0, initialVersion, cacheSize)
+	if initialVersion <= 1 {
+		return New(cacheSize)
+	}
+	return NewEmptyTree(uint64(initialVersion-1), cacheSize)
 }
 
 // NewFromSnapshot mmap the blob files and create the root node.
@@ -70,7 +74,7 @@ func NewFromSnapshot(snapshot *Snapshot, zeroCopy bool, cacheSize int) *Tree {
 		version:  snapshot.Version(),
 		snapshot: snapshot,
 		zeroCopy: zeroCopy,
-		cache:    cache.New(cacheSize),
+		cache:    NewCache(cacheSize),
 	}
 
 	if !snapshot.IsEmpty() {
@@ -92,8 +96,22 @@ func (t *Tree) SetInitialVersion(initialVersion int64) error {
 	if initialVersion >= math.MaxUint32 {
 		return fmt.Errorf("version overflows uint32: %d", initialVersion)
 	}
-	t.initialVersion = uint32(initialVersion)
+
+	t.setInitialVersion(uint32(initialVersion))
 	return nil
+}
+
+func (t *Tree) setInitialVersion(initialVersion uint32) {
+	if t.version > 0 {
+		// initial version has no effect if the tree is already initialized
+		return
+	}
+
+	if initialVersion < 1 {
+		t.version = 0
+	} else {
+		t.version = initialVersion - 1
+	}
 }
 
 // Copy returns a snapshot of the tree which won't be modified by further modifications on the main tree,
@@ -105,12 +123,12 @@ func (t *Tree) Copy(cacheSize int) *Tree {
 	}
 	newTree := *t
 	// cache is not copied along because it's not thread-safe to access
-	newTree.cache = cache.New(cacheSize)
+	newTree.cache = NewCache(cacheSize)
 	return &newTree
 }
 
 // ApplyChangeSet apply the change set of a whole version, and update hashes.
-func (t *Tree) ApplyChangeSet(changeSet iavl.ChangeSet, updateHash bool) ([]byte, int64, error) {
+func (t *Tree) ApplyChangeSet(changeSet ChangeSet) {
 	for _, pair := range changeSet.Pairs {
 		if pair.Delete {
 			t.remove(pair.Key)
@@ -118,38 +136,38 @@ func (t *Tree) ApplyChangeSet(changeSet iavl.ChangeSet, updateHash bool) ([]byte
 			t.set(pair.Key, pair.Value)
 		}
 	}
-
-	return t.saveVersion(updateHash)
 }
 
 func (t *Tree) set(key, value []byte) {
+	if value == nil {
+		// the value could be nil when replaying changes from write-ahead-log because of protobuf decoding
+		value = []byte{}
+	}
 	t.root, _ = setRecursive(t.root, key, value, t.version+1, t.cowVersion)
-	t.cache.Add(&cacheNode{key, value})
+	if t.cache != nil {
+		t.cache.Add(&cacheNode{key, value})
+	}
 }
 
 func (t *Tree) remove(key []byte) {
 	_, t.root, _ = removeRecursive(t.root, key, t.version+1, t.cowVersion)
-	t.cache.Remove(key)
+	if t.cache != nil {
+		t.cache.Remove(key)
+	}
 }
 
-// saveVersion increases the version number and optionally updates the hashes
-func (t *Tree) saveVersion(updateHash bool) ([]byte, int64, error) {
+// SaveVersion increases the version number and optionally updates the hashes
+func (t *Tree) SaveVersion(updateHash bool) ([]byte, int64, error) {
+	if t.version == uint32(math.MaxUint32) {
+		return nil, 0, fmt.Errorf("version overflows uint32: %d", t.version)
+	}
+
 	var hash []byte
 	if updateHash {
 		hash = t.RootHash()
 	}
 
-	if t.version >= uint32(math.MaxUint32) {
-		return nil, 0, errors.New("version overflows uint32")
-	}
 	t.version++
-
-	// to be compatible with existing golang iavl implementation.
-	// see: https://github.com/cosmos/iavl/pull/660
-	if t.version == 1 && t.initialVersion > 0 {
-		t.version = t.initialVersion
-	}
-
 	return hash, int64(t.version), nil
 }
 
@@ -158,12 +176,13 @@ func (t *Tree) Version() int64 {
 	return int64(t.version)
 }
 
-// RootHash updates the hashes and return the current root hash
+// RootHash updates the hashes and return the current root hash,
+// it clones the persisted node's bytes, so the returned bytes is safe to retain.
 func (t *Tree) RootHash() []byte {
 	if t.root == nil {
 		return emptyHash
 	}
-	return t.root.Hash()
+	return t.root.SafeHash()
 }
 
 func (t *Tree) GetWithIndex(key []byte) (int64, []byte) {
@@ -195,8 +214,10 @@ func (t *Tree) GetByIndex(index int64) ([]byte, []byte) {
 }
 
 func (t *Tree) Get(key []byte) []byte {
-	if node := t.cache.Get(key); node != nil {
-		return node.(*cacheNode).value
+	if t.cache != nil {
+		if node := t.cache.Get(key); node != nil {
+			return node.(*cacheNode).value
+		}
 	}
 
 	_, value := t.GetWithIndex(key)
@@ -204,7 +225,9 @@ func (t *Tree) Get(key []byte) []byte {
 		return nil
 	}
 
-	t.cache.Add(&cacheNode{key, value})
+	if t.cache != nil {
+		t.cache.Add(&cacheNode{key, value})
+	}
 	return value
 }
 
@@ -212,7 +235,7 @@ func (t *Tree) Has(key []byte) bool {
 	return t.Get(key) != nil
 }
 
-func (t *Tree) Iterator(start, end []byte, ascending bool) dbm.Iterator {
+func (t *Tree) Iterator(start, end []byte, ascending bool) *Iterator {
 	return NewIterator(start, end, ascending, t.root, t.zeroCopy)
 }
 
@@ -253,9 +276,9 @@ func (t *Tree) Export() *Exporter {
 	}
 
 	// do normal post-order traversal export
-	return newExporter(func(callback func(node *iavl.ExportNode) bool) {
+	return newExporter(func(callback func(node *ExportNode) bool) {
 		t.ScanPostOrder(func(node Node) bool {
-			return callback(&iavl.ExportNode{
+			return callback(&ExportNode{
 				Key:     node.Key(),
 				Value:   node.Value(),
 				Version: int64(node.Version()),

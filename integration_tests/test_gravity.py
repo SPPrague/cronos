@@ -1,9 +1,11 @@
 import json
 
 import pytest
+import requests
 from eth_account.account import Account
 from eth_utils import abi
 from hexbytes import HexBytes
+from pystarport import ports
 from web3.exceptions import BadFunctionCallOutput
 
 from .gravity_utils import prepare_gravity, setup_cosmos_erc20_contract
@@ -26,6 +28,9 @@ from .utils import (
 )
 
 pytestmark = pytest.mark.gravity
+
+# skip gravity-bridge integration tests since it's not enabled by default.
+pytest.skip("skipping gravity-bridge tests", allow_module_level=True)
 
 Account.enable_unaudited_hdwallet_features()
 
@@ -172,9 +177,8 @@ def test_multiple_attestation_processing(gravity):
         print("fund all accounts")
         for name in ACCOUNTS:
             address = ACCOUNTS[name].address
-            send_transaction(
-                geth, {"to": address, "value": 10**17}, KEYS["validator"]
-            )
+            data = {"to": address, "value": 10**17}
+            send_transaction(geth, data, KEYS["validator"])
             tx = erc20.functions.transfer(address, amount).build_transaction(
                 {"from": ADDRS["validator"]}
             )
@@ -237,6 +241,8 @@ def submit_proposal(cli, tmp_path, is_legacy, denom, conctract):
             }
         ],
         "deposit": "1basetcro",
+        "title": "title",
+        "summary": "summary",
     }
     proposal.write_text(json.dumps(proposal_src))
     return cli.submit_gov_proposal(proposal, from_="community")
@@ -275,7 +281,7 @@ def test_gov_token_mapping(gravity, tmp_path, is_legacy):
     rsp = submit_proposal(cli, tmp_path, is_legacy, denom, crc21.address)
     assert rsp["code"] == 0, rsp["raw_log"]
 
-    approve_proposal(gravity.cronos, rsp)
+    approve_proposal(gravity.cronos, rsp["events"])
 
     print("check the contract mapping exists now")
     rsp = cli.query_contract_by_denom(denom)
@@ -294,6 +300,17 @@ def test_gov_token_mapping(gravity, tmp_path, is_legacy):
         return balance == 10
 
     wait_for_fn("check balance on cronos", check)
+
+    # check duplicate end_block_events
+    height = cli.block_height()
+    port = ports.rpc_port(gravity.cronos.base_port(0))
+    url = f"http://127.0.0.1:{port}/block_results?height={height}"
+    res = requests.get(url).json().get("result")
+    if res:
+        events = res["end_block_events"]
+        target = "ethereum_send_to_cosmos_handled"
+        count = sum(1 for evt in events if evt["type"] == target)
+        assert count <= 2, f"duplicate {target}"
 
 
 def test_direct_token_mapping(gravity):

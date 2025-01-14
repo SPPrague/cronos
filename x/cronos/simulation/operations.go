@@ -5,9 +5,9 @@ import (
 	"math/rand"
 
 	errorsmod "cosmossdk.io/errors"
+	simappparams "cosmossdk.io/simapp/params"
 	"github.com/cosmos/cosmos-sdk/baseapp"
 	"github.com/cosmos/cosmos-sdk/codec"
-	simappparams "github.com/cosmos/cosmos-sdk/simapp/params"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
 	simtypes "github.com/cosmos/cosmos-sdk/types/simulation"
@@ -34,7 +34,7 @@ func WeightedOperations(
 ) simulation.WeightedOperations {
 	var weightMsgUpdateTokenMapping int
 
-	appParams.GetOrGenerate(cdc, OpWeightMsgUpdateTokenMapping, &weightMsgUpdateTokenMapping, nil,
+	appParams.GetOrGenerate(OpWeightMsgUpdateTokenMapping, &weightMsgUpdateTokenMapping, nil,
 		func(_ *rand.Rand) {
 			weightMsgUpdateTokenMapping = WeightMsgUpdateTokenMapping
 		},
@@ -81,7 +81,6 @@ func SimulateUpdateTokenMapping(ak types.AccountKeeper, bk types.BankKeeper, k *
 			TxGen:           simappparams.MakeTestEncodingConfig().TxConfig,
 			Cdc:             nil,
 			Msg:             msg,
-			MsgType:         msg.Type(),
 			Context:         ctx,
 			SimAccount:      simAccount,
 			AccountKeeper:   ak,
@@ -91,7 +90,7 @@ func SimulateUpdateTokenMapping(ak types.AccountKeeper, bk types.BankKeeper, k *
 		}
 
 		oper, ops, err := simulation.GenAndDeliverTxWithRandFees(txCtx)
-		if simAccount.Address.String() != cronosAdmin && errors.Is(err, errorsmod.Wrap(sdkerrors.ErrInvalidAddress, "msg sender is authorized")) {
+		if simAccount.Address.String() != cronosAdmin && errors.Is(err, errorsmod.Wrap(sdkerrors.ErrUnauthorized, "msg sender is not authorized")) {
 			return simtypes.NoOpMsg(types.ModuleName, msg.Type(), "unauthorized tx should fail"), nil, nil
 		}
 		return oper, ops, err

@@ -14,9 +14,6 @@ const (
 	// RouterKey is the message route for slashing
 	RouterKey = ModuleName
 
-	// QuerierRoute defines the module's query routing key
-	QuerierRoute = ModuleName
-
 	// MemStoreKey defines the in-memory store key
 	MemStoreKey = "mem_cronos"
 
@@ -30,6 +27,7 @@ const (
 	prefixContractToDenom
 	paramsKey
 	prefixAdminToPermissions
+	prefixBlockList
 )
 
 // KVStore key prefixes
@@ -40,6 +38,7 @@ var (
 	// ParamsKey is the key for params.
 	ParamsKey                   = []byte{paramsKey}
 	KeyPrefixAdminToPermissions = []byte{prefixAdminToPermissions}
+	KeyPrefixBlockList          = []byte{prefixBlockList}
 )
 
 // this line is used by starport scaffolding # ibc/keys/port

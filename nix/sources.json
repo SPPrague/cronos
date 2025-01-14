@@ -5,22 +5,10 @@
         "homepage": "https://crypto.org",
         "owner": "crypto-org-chain",
         "repo": "chain-main",
-        "rev": "7e7d49839283f6d77516f614c2e2ff7441771e5a",
-        "sha256": "1gm70jfd9rvi8shf6n7fjfvs4krdv3vjz50f44id3dv8fgg5zni1",
+        "rev": "1baff8aed447abcad5c8d2ea4f92d7ae00d8b8b3",
+        "sha256": "01cg1jfg4l2d6g2spxf3c2375zj0siv8wg1lssafv7ry51f3zyqz",
         "type": "tarball",
-        "url": "https://github.com/crypto-org-chain/chain-main/archive/7e7d49839283f6d77516f614c2e2ff7441771e5a.tar.gz",
-        "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
-    },
-    "cosmos-sdk": {
-        "branch": "v0.45.0",
-        "description": ":chains: A Framework for Building High Value Public Blockchains :sparkles:",
-        "homepage": "https://cosmos.network/",
-        "owner": "cosmos",
-        "repo": "cosmos-sdk",
-        "rev": "b6c77e6c819f8a51166649eaef125d1bfb276f04",
-        "sha256": "09ns4yfxyfi7c7n5g69zv32m1rdssdl48c1akmv1y2vz6ayz4v02",
-        "type": "tarball",
-        "url": "https://github.com/cosmos/cosmos-sdk/archive/b6c77e6c819f8a51166649eaef125d1bfb276f04.tar.gz",
+        "url": "https://github.com/crypto-org-chain/chain-main/archive/1baff8aed447abcad5c8d2ea4f92d7ae00d8b8b3.tar.gz",
         "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
     },
     "dapptools": {
@@ -35,6 +23,18 @@
         "url": "https://github.com/dapphub/dapptools/archive/refs/tags/hevm/0.49.0.tar.gz",
         "url_template": "https://github.com/dapphub/dapptools/archive/refs/tags/hevm/0.49.0.tar.gz",
         "version": "hevm/0.49.0"
+    },
+    "dapptools-master": {
+        "branch": "master",
+        "description": "Dapp, Seth, Hevm, and more",
+        "homepage": "https://dapp.tools",
+        "owner": "dapphub",
+        "repo": "dapptools",
+        "rev": "ba9fbcf95c01d247a30b26d7e064e8abdfba79db",
+        "sha256": "0kj726lmsdaljjm7wz3gpfs90h03h006z3w4fwcyan4bi5myi1k2",
+        "type": "tarball",
+        "url": "https://github.com/dapphub/dapptools/archive/ba9fbcf95c01d247a30b26d7e064e8abdfba79db.tar.gz",
+        "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
     },
     "flake-compat": {
         "branch": "master",
@@ -54,10 +54,10 @@
         "homepage": null,
         "owner": "nix-community",
         "repo": "gomod2nix",
-        "rev": "3cbf3a51fe32e2f57af4c52744e7228bab22983d",
-        "sha256": "11kn199nxcw6zspqawkrsfwv8wzx581wif3day160qlg11ya9di5",
+        "rev": "514283ec89c39ad0079ff2f3b1437404e4cba608",
+        "sha256": "tPsqU00FhgdFr0JiQUiBMgPVbl1jbPCY5gbFiJycL3I=",
         "type": "tarball",
-        "url": "https://github.com/nix-community/gomod2nix/archive/3cbf3a51fe32e2f57af4c52744e7228bab22983d.tar.gz",
+        "url": "https://github.com/nix-community/gomod2nix/archive/514283ec89c39ad0079ff2f3b1437404e4cba608.tar.gz",
         "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
     },
     "gravity-bridge": {
@@ -73,15 +73,15 @@
         "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
     },
     "ibc-rs": {
-        "branch": "v1.4.0",
+        "branch": "v1.8.3",
         "description": "IBC modules and relayer - Formal specifications and Rust implementation",
         "homepage": "",
         "owner": "informalsystems",
         "repo": "ibc-rs",
-        "rev": "daad02843a091bbdb3dd608e5f4ce790895c8845",
-        "sha256": "1n90sl5mcw4q6xri9k6rlhavxl43nxaza4ma9qwbhz2sh63sbh1l",
+        "rev": "d54d0dcfc4fe0aaccf83e4c785538fac5af06d15",
+        "sha256": "13pfnjh2a5vjhgl7fnaw4gvr2qchp6a9yy2g3ln6rsasgp8qvpn0",
         "type": "tarball",
-        "url": "https://github.com/informalsystems/ibc-rs/archive/daad02843a091bbdb3dd608e5f4ce790895c8845.tar.gz",
+        "url": "https://github.com/devashishdxt/hermes/archive/d54d0dcfc4fe0aaccf83e4c785538fac5af06d15.tar.gz",
         "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
     },
     "niv": {
@@ -97,15 +97,39 @@
         "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
     },
     "nixpkgs": {
-        "branch": "master",
+        "branch": "release-24.05",
         "description": "Nix Packages collection",
         "homepage": "",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "90aa73fc8e1550b16d1ebdc436e48d9951f7989b",
-        "sha256": "0jh4npbcqjlszhnaz5mkziv5g1p5ig6wqp68yjxkjllsc7vhsrw6",
+        "rev": "50286248f2d7283682bdd47ba14af33a9233b88b",
+        "sha256": "19sqfs6pamknhlg3mqpqs3wj0wj1ynj5icfmhqmjjvq08byfc2hl",
         "type": "tarball",
-        "url": "https://github.com/NixOS/nixpkgs/archive/90aa73fc8e1550b16d1ebdc436e48d9951f7989b.tar.gz",
+        "url": "https://github.com/NixOS/nixpkgs/archive/50286248f2d7283682bdd47ba14af33a9233b88b.tar.gz",
+        "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
+    },
+    "poetry2nix": {
+        "branch": "master",
+        "description": "Convert poetry projects to nix automagically [maintainer=@adisbladis] ",
+        "homepage": "",
+        "owner": "nix-community",
+        "repo": "poetry2nix",
+        "rev": "4eb2ac54029af42a001c9901194e9ce19cbd8a40",
+        "sha256": "16fi71fpywiqsya1z99kkb14dansyrmkkrb2clzs3b5qqx673wf4",
+        "type": "tarball",
+        "url": "https://github.com/nix-community/poetry2nix/archive/4eb2ac54029af42a001c9901194e9ce19cbd8a40.tar.gz",
+        "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
+    },
+    "relayer": {
+        "branch": "main",
+        "description": "An IBC relayer for ibc-go",
+        "homepage": "https://github.com/crypto-org-chain/relayer",
+        "owner": "crypto-org-chain",
+        "repo": "relayer",
+        "rev": "fe5722292a9961e80818e3ef5c987330b538bc05",
+        "sha256": "0jv4pkrqhckbabxxxbr0bcil0fakbnc7sf22k2wa5q6v6921ci0y",
+        "type": "tarball",
+        "url": "https://github.com/crypto-org-chain/relayer/archive/fe5722292a9961e80818e3ef5c987330b538bc05.tar.gz",
         "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
     }
 }

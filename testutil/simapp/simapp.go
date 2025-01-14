@@ -3,12 +3,12 @@ package simapp
 import (
 	"time"
 
-	"github.com/cosmos/cosmos-sdk/simapp"
-	abci "github.com/tendermint/tendermint/abci/types"
-	"github.com/tendermint/tendermint/libs/log"
-	tmproto "github.com/tendermint/tendermint/proto/tendermint/types"
-	tmtypes "github.com/tendermint/tendermint/types"
-	tmdb "github.com/tendermint/tm-db"
+	"cosmossdk.io/log"
+	abci "github.com/cometbft/cometbft/abci/types"
+	tmproto "github.com/cometbft/cometbft/proto/tendermint/types"
+	tmtypes "github.com/cometbft/cometbft/types"
+	tmdb "github.com/cosmos/cosmos-db"
+	simtestutil "github.com/cosmos/cosmos-sdk/testutil/sims"
 
 	"github.com/crypto-org-chain/cronos/v2/app"
 )
@@ -18,21 +18,17 @@ func New(dir string) *app.App {
 	db := tmdb.NewMemDB()
 	logger := log.NewNopLogger()
 
-	encoding := app.MakeEncodingConfig()
-
-	a := app.New(logger, db, nil, true, true, map[int64]bool{}, dir, 0, encoding,
-		// this line is used by starport scaffolding # stargate/testutil/appArgument
-		simapp.EmptyAppOptions{})
+	a := app.New(logger, db, nil, true, simtestutil.EmptyAppOptions{})
 	// InitChain updates deliverState which is required when app.NewContext is called
-	a.InitChain(abci.RequestInitChain{
+	a.InitChain(&abci.RequestInitChain{
 		ConsensusParams: defaultConsensusParams,
 		AppStateBytes:   []byte("{}"),
 	})
 	return a
 }
 
-var defaultConsensusParams = &abci.ConsensusParams{
-	Block: &abci.BlockParams{
+var defaultConsensusParams = &tmproto.ConsensusParams{
+	Block: &tmproto.BlockParams{
 		MaxBytes: 200000,
 		MaxGas:   2000000,
 	},

@@ -13,13 +13,13 @@ import (
 
 	"cosmossdk.io/errors"
 	"github.com/alitto/pond"
-	"github.com/cosmos/iavl"
-	gogotypes "github.com/gogo/protobuf/types"
+	gogotypes "github.com/cosmos/gogoproto/types"
+	"github.com/cosmos/iavl/keyformat"
 	"github.com/linxGnu/grocksdb"
 	"github.com/spf13/cobra"
 
-	storetypes "github.com/cosmos/cosmos-sdk/store/types"
-	capabilitytypes "github.com/cosmos/cosmos-sdk/x/capability/types"
+	storetypes "cosmossdk.io/store/types"
+	capabilitytypes "github.com/cosmos/ibc-go/modules/capability/types"
 
 	"github.com/crypto-org-chain/cronos/memiavl"
 	"github.com/crypto-org-chain/cronos/versiondb/extsort"
@@ -27,6 +27,7 @@ import (
 
 const (
 	int64Size = 8
+	int32Size = 4
 
 	storeKeyPrefix   = "s/k:%s/"
 	latestVersionKey = "s/latest"
@@ -41,8 +42,9 @@ const (
 )
 
 var (
-	nodeKeyFormat = iavl.NewKeyFormat('n', memiavl.SizeHash) // n<hash>
-	rootKeyFormat = iavl.NewKeyFormat('r', int64Size)        // r<version>
+	nodeKeyFormat   = keyformat.NewKeyFormat('n', memiavl.SizeHash)              // n<hash>
+	rootKeyFormat   = keyformat.NewKeyFormat('r', int64Size)                     // r<version>
+	nodeKeyV1Format = keyformat.NewFastPrefixFormatter('s', int64Size+int32Size) // s<version><nonce>
 )
 
 func RestoreAppDBCmd(opts Options) *cobra.Command {
@@ -63,6 +65,10 @@ func RestoreAppDBCmd(opts Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			sdk64Compact, err := cmd.Flags().GetBool(flagSDK64Compact)
+			if err != nil {
+				return err
+			}
 			stores, err := GetStoresOrDefault(cmd, opts.DefaultStores)
 			if err != nil {
 				return err
@@ -76,9 +82,10 @@ func RestoreAppDBCmd(opts Options) *cobra.Command {
 
 			// load the snapshots and compute commit info first
 			var lastestVersion int64
-			storeInfos := []storetypes.StoreInfo{
+			var storeInfos []storetypes.StoreInfo
+			if sdk64Compact {
 				// https://github.com/cosmos/cosmos-sdk/issues/14916
-				{Name: capabilitytypes.MemStoreKey, CommitId: storetypes.CommitID{}},
+				storeInfos = append(storeInfos, storetypes.StoreInfo{Name: capabilitytypes.MemStoreKey, CommitId: storetypes.CommitID{}})
 			}
 			snapshots := make([]*memiavl.Snapshot, len(stores))
 			for i, store := range stores {
@@ -167,6 +174,7 @@ func RestoreAppDBCmd(opts Options) *cobra.Command {
 	cmd.Flags().String(flagStores, "", "list of store names, default to the current store list in application")
 	cmd.Flags().Uint64(flagSorterChunkSize, DefaultSorterChunkSizeIAVL, "uncompressed chunk size for external sorter, it decides the peak ram usage, on disk it'll be snappy compressed")
 	cmd.Flags().Int(flagConcurrency, runtime.NumCPU(), "Number concurrent goroutines to parallelize the work")
+	cmd.Flags().Bool(flagSDK64Compact, false, "Should the app hash calculation be compatible with cosmos-sdk v0.46 and earlier")
 
 	return cmd
 }

@@ -28,7 +28,8 @@ func TestProofs(t *testing.T) {
 	for i, tc := range testCases {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
 			changes := ChangeSets[i]
-			_, _, err := tree.ApplyChangeSet(changes, true)
+			tree.ApplyChangeSet(changes)
+			_, _, err := tree.SaveVersion(true)
 			require.NoError(t, err)
 
 			proof, err := tree.GetMembershipProof(tc.existKey)
@@ -40,7 +41,7 @@ func TestProofs(t *testing.T) {
 			require.True(t, tree.VerifyNonMembership(proof, tc.nonExistKey))
 
 			// test persisted tree
-			require.NoError(t, tree.WriteSnapshot(tmpDir, false))
+			require.NoError(t, tree.WriteSnapshot(tmpDir))
 			snapshot, err := OpenSnapshot(tmpDir)
 			require.NoError(t, err)
 			ptree := NewFromSnapshot(snapshot, true, 0)
